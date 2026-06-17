@@ -15,8 +15,8 @@ tsl = Tradehull(
 
 WATCHLIST = [
    "NATURALGAS JUN FUT",
-   "CRUDE JUN FUT",
-   "NIFTY 50",
+   "CRUDEOIL JUN FUT",
+   "NIFTY",
    "NIFTY JUN FUT"
 ]
 
