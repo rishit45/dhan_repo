@@ -1,0 +1,86 @@
+{
+  "strategy": {
+    "poll_interval_secs": 5,
+    "fire_once_per_instrument": true,
+    "place_live_orders": false
+  },
+
+  "oi_tracker": {
+    "enabled": true,
+    "underlying": "NIFTY",
+    "underlying_security_id": "13",
+    "underlying_segment": "IDX_I",
+    "expiry_index": 0,
+    "rate_limit_secs": 3,
+    "history_len": 5
+  },
+
+  "order_template": {
+    "action": "BUY",
+    "quantity": 1,
+    "order_type": "LIMIT",
+    "product_type": "INTRADAY",
+    "validity": "DAY",
+    "price": 0
+  },
+
+  "instruments": {
+    "NIFTY_FUT": {
+      "tradingsymbol": "NIFTY JUN FUT",
+      "security_id": "62329",
+      "exchange_segment": "NSE_FNO",
+      "quantity": 50,
+      "trigger_operator": "GREATER_THAN_EQUAL",
+      "trigger_price": 23500,
+      "order_type": "LIMIT",
+      "price": 23500,
+      "target_mode": "points",
+      "target_value": 50,
+      "sl_mode": "points",
+      "sl_value": 25,
+      "entry_time": "09:20",
+      "square_off_time": "15:15"
+    },
+    "CRUDEOIL_FUT": {
+      "tradingsymbol": "CRUDEOIL JUL FUT",
+      "security_id": "520702",
+      "exchange_segment": "MCX_COMM",
+      "quantity": 100,
+      "trigger_operator": "LESS_THAN_EQUAL",
+      "trigger_price": 6750,
+      "order_type": "LIMIT",
+      "price": 6750,
+      "target_mode": "absolute",
+      "target_value": 6850,
+      "sl_mode": "absolute",
+      "sl_value": 6700,
+      "entry_time": "09:30",
+      "square_off_time": "23:15"
+    },
+    "NATURALGAS_FUT": {
+      "tradingsymbol": "NATURALGAS JUN FUT",
+      "security_id": "504265",
+      "exchange_segment": "MCX_COMM",
+      "quantity": 1250,
+      "trigger_operator": "GREATER_THAN_EQUAL",
+      "trigger_price": 260,
+      "order_type": "LIMIT",
+      "price": 260,
+      "target_mode": "points",
+      "target_value": 8,
+      "sl_mode": "points",
+      "sl_value": 4,
+      "entry_time": "09:30",
+      "square_off_time": "23:15"
+    }
+  },
+
+  "defaults": {
+    "action": "BUY",
+    "order_type": "LIMIT",
+    "target_mode": "points",
+    "sl_mode": "points",
+    "product_type": "INTRADAY",
+    "validity": "DAY"
+  }
+}
