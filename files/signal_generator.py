@@ -3,15 +3,24 @@ from datetime import datetime
 
 from dhanhq import DhanContext, dhanhq
 
-from candles import get_instrument, process_tick
+from candles import configure_timeframe, get_instrument, get_timeframe_label, process_tick
 from config_loader import get_all_instrument_configs, load_config
 
 
-client_id = ""
-access_token = ""
+def create_dhan_client():
+    raw_config = load_config()
+    dhan_config = raw_config.get("dhan", {})
+    client_id = str(dhan_config.get("client_id", "")).strip()
+    access_token = str(dhan_config.get("access_token", "")).strip()
 
-dhan_context = DhanContext(client_id, access_token)
-dhan = dhanhq(dhan_context)
+    if not client_id or not access_token:
+        print("[DHAN CONFIG] client_id/access_token missing in config.json -> dhan section")
+
+    dhan_context = DhanContext(client_id, access_token)
+    return dhanhq(dhan_context)
+
+
+dhan = create_dhan_client()
 
 POLL_INTERVAL_SECS = 5
 
@@ -62,9 +71,21 @@ def _security_id_for_quote(security_id):
     return int(security_id) if security_id.isdigit() else security_id
 
 
+def _dhan_failure_message(response):
+    remarks = response.get("remarks") if isinstance(response, dict) else None
+    if isinstance(remarks, dict):
+        useful = {key: value for key, value in remarks.items() if value not in ("", None)}
+        if useful:
+            return useful
+    elif remarks not in ("", None):
+        return remarks
+
+    return response
+
+
 def _extract_ltp(response, exchange_segment, security_id):
     if isinstance(response, dict) and response.get("status") == "failure":
-        raise RuntimeError(f"Dhan quote failed: {response.get('remarks') or response}")
+        raise RuntimeError(f"Dhan quote failed: {_dhan_failure_message(response)}")
 
     data = response.get("data", response) if isinstance(response, dict) else response
     security_id = str(security_id)
@@ -191,8 +212,8 @@ def evaluate_signal(instrument_key, instrument_config, previous_ltp=None, quote_
     ltp = get_ltp(instrument_config, quote_response=quote_response)
     instrument = process_tick(instrument_key, ltp)
 
-    # Your strategy can use the live candle like:
-    # instrument["open"], instrument["high"], instrument["low"], instrument["close"]
+    # Your strategy can use the forming candle's open/high/low.
+    # close is filled only when the timeframe candle completes.
     # Closed candle values can be accessed like instrument["open-09:20"].
     triggered = is_trigger_hit(
         ltp=ltp,
@@ -265,7 +286,8 @@ def print_ohlc(all_instruments):
         if candle is None:
             continue
         print(
-            "[1M CLOSED] {key} time={time} O={open} H={high} L={low} C={close}".format(
+            "[{timeframe} CLOSED] {key} time={time} O={open} H={high} L={low} C={close}".format(
+                timeframe=get_timeframe_label(),
                 key=instrument_key,
                 time=candle["time"].strftime("%H:%M"),
                 open=candle["open"],
@@ -283,6 +305,7 @@ def run_signal_generator():
     poll_interval = strategy_config.get("poll_interval_secs", POLL_INTERVAL_SECS)
     fire_once = strategy_config.get("fire_once_per_instrument", True)
     place_live_orders = strategy_config.get("place_live_orders", False)
+    configure_timeframe(strategy_config.get("timeframe", "1min"))
 
     fired = set()
     previous_ltps = {}

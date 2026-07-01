@@ -1,18 +1,30 @@
 {
+  "dhan": {
+    "client_id": "",
+    "access_token": ""
+  },
+
   "strategy": {
     "poll_interval_secs": 5,
+    "timeframe": "1min",
     "fire_once_per_instrument": true,
     "place_live_orders": false
   },
 
   "oi_tracker": {
     "enabled": true,
-    "underlying": "NIFTY",
-    "underlying_security_id": "13",
-    "underlying_segment": "IDX_I",
+    "expiry_mode": "all",
     "expiry_index": 0,
     "rate_limit_secs": 3,
-    "history_len": 5
+    "history_len": 5,
+    "assets": [
+      {
+        "enabled": true,
+        "underlying": "NIFTY",
+        "underlying_security_id": "13",
+        "underlying_segment": "IDX_I"
+      }
+    ]
   },
 
   "order_template": {

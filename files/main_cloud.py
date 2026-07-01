@@ -1,6 +1,6 @@
 import time
 
-from candles import get_instrument
+from candles import configure_timeframe, get_instrument, get_timeframe_label
 from config_loader import get_all_instrument_configs, load_config
 from oi_tracker import OITracker
 from signal_generator import (
@@ -17,7 +17,8 @@ def print_ohlc(all_instruments):
         if candle is None:
             continue
         print(
-            "[1M CLOSED] {key} time={time} O={open} H={high} L={low} C={close}".format(
+            "[{timeframe} CLOSED] {key} time={time} O={open} H={high} L={low} C={close}".format(
+                timeframe=get_timeframe_label(),
                 key=instrument_key,
                 time=candle["time"].strftime("%H:%M"),
                 open=candle["open"],
@@ -35,6 +36,7 @@ if __name__ == "__main__":
     poll_interval = strategy_config.get("poll_interval_secs", POLL_INTERVAL_SECS)
     fire_once = strategy_config.get("fire_once_per_instrument", True)
     place_live_orders = strategy_config.get("place_live_orders", False)
+    configure_timeframe(strategy_config.get("timeframe", "1min"))
 
     oi_config = raw_config.get("oi_tracker", {})
     oi_tracker = OITracker(dhan, oi_config)

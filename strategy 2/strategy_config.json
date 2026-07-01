@@ -1,0 +1,55 @@
+{
+  "dhan": {
+    "client_id": "",
+    "access_token": ""
+  },
+  "live_orders": false,
+  "poll_interval_secs": 5,
+  "underlying": {
+    "name": "NIFTY",
+    "security_id": "13",
+    "exchange_segment": "IDX_I"
+  },
+  "option_selection": {
+    "expiry": "current_week",
+    "premium_min": 20,
+    "premium_max": 35,
+    "prefer_otm": true,
+    "candidate_rank_limit": 20,
+    "refresh_secs": 300
+  },
+  "instrument_defaults": {
+    "exchange_segment": "NSE_FNO",
+    "lot_size": 50,
+    "product_type": "INTRADAY",
+    "validity": "DAY"
+  },
+  "quantity": {
+    "mode": "lots",
+    "lots": 1,
+    "margin_capital": 100000
+  },
+  "entry": {
+    "enabled_sides": ["SHORT"],
+    "order_type": "LIMIT",
+    "short_limit_price_source": "best_ask"
+  },
+  "candles": {
+    "timeframe_minutes": 5,
+    "history_len": 300
+  },
+  "moving_average_channel": {
+    "source": "5min_ltp_open_close",
+    "length": 55
+  },
+  "exit": {
+    "mode": "points",
+    "target_points": 2,
+    "stop_loss_points": 2,
+    "target_pnl": 1000,
+    "stop_loss_pnl": 1000
+  },
+  "edis": {
+    "enabled": false
+  }
+}
