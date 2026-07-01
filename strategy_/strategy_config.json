@@ -1,0 +1,55 @@
+{
+  "dhan": {
+    "client_id": "1111875444",
+    "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpc3MiOiJkaGFuIiwicGFydG5lcklkIjoiIiwiZXhwIjoxNzgyOTc0NDkxLCJpYXQiOjE3ODI4ODgwOTEsInRva2VuQ29uc3VtZXJUeXBlIjoiU0VMRiIsIndlYmhvb2tVcmwiOiIiLCJkaGFuQ2xpZW50SWQiOiIxMTExODc1NDQ0In0.quPraXm_pPNPutzNiKEB_fBTU4ZNLYBfz3NJCadzGeeGPvtk0Af2WMFzZ10gyISZASWPiKO-ctUvt74qKRxa2w"
+  },
+  "live_orders": true,
+  "poll_interval_secs": 5,
+  "instrument": {
+    "name": "NATURALGAS_FUT",
+    "tradingsymbol": "NATURALGAS JUL FUT",
+    "security_id": "538685",
+    "exchange_segment": "MCX_COMM",
+    "lot_size": 1250,
+    "product_type": "INTRADAY",
+    "validity": "DAY"
+  },
+  "quantity": {
+    "mode": "fixed",
+    "value": 1250,
+    "capital": 100000
+  },
+  "entry": {
+    "enabled_sides": ["LONG", "SHORT"],
+    "order_type": "LIMIT",
+    "long_limit_price_source": "best_ask",
+    "short_limit_price_source": "best_bid"
+  },
+  "live_safety": {
+    "require_startup_confirmation": true,
+    "confirmation_text": "LIVE",
+    "check_margin": true,
+    "margin_quantity_mode": "auto"
+  },
+  "candles": {
+    "timeframe_minutes": 5,
+    "short_timeframe_minutes": 3,
+    "history_len": 200,
+    "history_csv_5min": "history_5min.csv",
+    "history_csv_3min": "history_3min.csv"
+  },
+  "moving_average_channel": {
+    "source": "ltp_high_low",
+    "length": 20
+  },
+  "exit": {
+    "mode": "points",
+    "target_points": 2,
+    "stop_loss_points": 2,
+    "target_pnl": 2500,
+    "stop_loss_pnl": 2500
+  },
+  "edis": {
+    "enabled": false
+  }
+}
