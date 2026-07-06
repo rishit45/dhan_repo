@@ -1,22 +1,22 @@
 {
   "dhan": {
     "client_id": "1111875444",
-    "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpc3MiOiJkaGFuIiwicGFydG5lcklkIjoiIiwiZXhwIjoxNzgyOTc0NDkxLCJpYXQiOjE3ODI4ODgwOTEsInRva2VuQ29uc3VtZXJUeXBlIjoiU0VMRiIsIndlYmhvb2tVcmwiOiIiLCJkaGFuQ2xpZW50SWQiOiIxMTExODc1NDQ0In0.quPraXm_pPNPutzNiKEB_fBTU4ZNLYBfz3NJCadzGeeGPvtk0Af2WMFzZ10gyISZASWPiKO-ctUvt74qKRxa2w"
+    "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpc3MiOiJkaGFuIiwicGFydG5lcklkIjoiIiwiZXhwIjoxNzgzMjQ0ODU1LCJpYXQiOjE3ODMxNTg0NTUsInRva2VuQ29uc3VtZXJUeXBlIjoiU0VMRiIsIndlYmhvb2tVcmwiOiIiLCJkaGFuQ2xpZW50SWQiOiIxMTExODc1NDQ0In0.j1KiKSPB8PO2ZRiGo6BXHc8jdSuymZ-Js-wE4Vj5OZp65nWM3TIVv2NCbery4Z9cL2Ag0gvGiMpOTGcQbvU_Gw"
   },
   "live_orders": true,
   "poll_interval_secs": 5,
   "instrument": {
-    "name": "NATURALGAS_FUT",
+    "name": "CRUDEOIL_FUT",
     "tradingsymbol": "NATURALGAS JUL FUT",
     "security_id": "538685",
     "exchange_segment": "MCX_COMM",
-    "lot_size": 1250,
+    "lot_size": 100,
     "product_type": "INTRADAY",
     "validity": "DAY"
   },
   "quantity": {
     "mode": "fixed",
-    "value": 1250,
+    "value": 100,
     "capital": 100000
   },
   "entry": {
@@ -40,12 +40,12 @@
   },
   "moving_average_channel": {
     "source": "ltp_high_low",
-    "length": 20
+    "length": 55
   },
   "exit": {
     "mode": "points",
-    "target_points": 2,
-    "stop_loss_points": 2,
+    "target_points": 1,
+    "stop_loss_points": 200,
     "target_pnl": 2500,
     "stop_loss_pnl": 2500
   },

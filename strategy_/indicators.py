@@ -11,7 +11,7 @@ Behaviour:
   updated container plus the current SMA computed over the mean of high/low.
 """
 
-MA_PERIOD = 20
+MA_PERIOD = 55
 
 try:
     import pandas as pd

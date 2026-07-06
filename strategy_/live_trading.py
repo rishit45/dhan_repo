@@ -191,7 +191,7 @@ def _margin_quantity(config, instrument, quantity):
 
     if mode == "order_quantity":
         return quantity
-    if mode == "lots" or (mode == "auto" and segment == "MCX_COMM"):
+    if mode == "lots" or (mode == "auto" and segment in DERIVATIVE_SEGMENTS):
         if lot_size <= 0 or quantity % lot_size != 0:
             raise ValueError(f"Cannot convert quantity {quantity} to lots using lot_size {lot_size}")
         return max(quantity // lot_size, 1)

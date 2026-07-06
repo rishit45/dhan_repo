@@ -1,7 +1,5 @@
 import time
-import os
-import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from buy import place_buy_order
 from candles import CandleStore
@@ -68,6 +66,27 @@ def mac_channel(candles):
     return {"high": high_sma, "low": low_sma}
 
 
+def candle_close(candles):
+    if not candles:
+        return None
+    try:
+        return float(candles[-1]["close"])
+    except Exception:
+        return None
+
+
+def crossed_above(previous_close, current_close, level):
+    if previous_close is None or current_close is None or level is None:
+        return False
+    return float(previous_close) <= float(level) and float(current_close) > float(level)
+
+
+def crossed_below(previous_close, current_close, level):
+    if previous_close is None or current_close is None or level is None:
+        return False
+    return float(previous_close) >= float(level) and float(current_close) < float(level)
+
+
 def append_completed_candle(candles, completed_candle):
     return indicators.append_candle(
         candles,
@@ -105,7 +124,7 @@ def run():
     enabled_sides = set(entry_config.get("enabled_sides", ["LONG", "SHORT"]))
     mac_length = int(mac_config.get("length", 20))
 
-    # Short and long candle stores. Long timeframe is 5 min, short timeframe is 3 min.
+    # Short and long candle stores are fully driven by strategy_config.json.
     short_timeframe = int(candle_config.get("short_timeframe_minutes", 3))
     long_timeframe = int(candle_config.get("timeframe_minutes", 5))
 
@@ -124,23 +143,23 @@ def run():
         long_history = fetch_historical_intraday_candles(
             dhan,
             instrument,
-            interval=5,
+            interval=long_timeframe,
             periods=int(mac_length),
             history_days=7,
         )
         short_history = fetch_historical_intraday_candles(
             dhan,
             instrument,
-            interval=3,
+            interval=short_timeframe,
             periods=int(mac_length),
             history_days=7,
         )
         if long_history:
             long_candles.load_history(long_history)
-            print(f"Seeded {len(long_history)} historical 5-minute candles from Dhan")
+            print(f"Seeded {len(long_history)} historical {long_timeframe}-minute candles from Dhan")
         if short_history:
             short_candles.load_history(short_history)
-            print(f"Seeded {len(short_history)} historical 3-minute candles from Dhan")
+            print(f"Seeded {len(short_history)} historical {short_timeframe}-minute candles from Dhan")
     except Exception as exc:
         print(f"Could not seed Dhan intraday candle history: {exc}")
 
@@ -153,9 +172,9 @@ def run():
     mac5min = mac_channel(sma_candles_5min)
     mac3min = mac_channel(sma_candles_3min)
 
-    print(f"Seeded {len(sma_candles_5min)} historical 5-min candles and {len(sma_candles_3min)} historical 3-min candles for MA.")
-    print_data("INITIAL_MAC5MIN", mac5min)
-    print_data("INITIAL_MAC3MIN", mac3min)
+    print(f"Seeded {len(sma_candles_5min)} historical {long_timeframe}-min candles and {len(sma_candles_3min)} historical {short_timeframe}-min candles for MA.")
+    print_data(f"INITIAL_MAC{long_timeframe}MIN", mac5min)
+    print_data(f"INITIAL_MAC{short_timeframe}MIN", mac3min)
 
     position = None
     trade_executed_since_last_long = False
@@ -180,10 +199,11 @@ def run():
             completed_long = long_candles.update(ltp)
             # compute and print MAC and candles only when a long candle closes
             if completed_long is not None:
+                previous_long_close = candle_close(sma_candles_5min)
                 sma_candles_5min = append_completed_candle(sma_candles_5min, completed_long)
                 mac5min = mac_channel(sma_candles_5min)
                 if mac5min is None:
-                    print(f"MAC5MIN waiting for {indicators.MA_PERIOD} candles, current count={len(sma_candles_5min)}")
+                    print(f"MAC{long_timeframe}MIN waiting for {indicators.MA_PERIOD} candles, current count={len(sma_candles_5min)}")
 
                 # get last closed short candle if available
                 last_short = None
@@ -192,12 +212,12 @@ def run():
                 except Exception:
                     last_short = None
 
-                print("\n===== 5MIN UPDATE =====")
+                print(f"\n===== {long_timeframe}MIN UPDATE =====")
                 print(f"Strategy start: {start_time.isoformat()}")
                 print(f"LONG_CANDLE_CLOSED: {completed_long}")
                 if last_short is not None:
                     print(f"LAST_SHORT_CANDLE: {last_short}")
-                print_data("MAC5MIN", mac5min)
+                print_data(f"MAC{long_timeframe}MIN", mac5min)
 
                 # 5-min MAC entry/exit logic for long trades only.
                 if mac5min is not None:
@@ -219,7 +239,7 @@ def run():
                                 print(f"[EXIT ORDER NOT ACCEPTED] Keeping position open. response={response}")
 
                     if position is None:
-                        if long_close > long_channel["high"] and "LONG" in enabled_sides:
+                        if crossed_above(previous_long_close, long_close, long_channel["high"]) and "LONG" in enabled_sides:
                             signal = "LONG"
                         else:
                             signal = None
@@ -251,7 +271,7 @@ def run():
                 # if any trade executed in the last long interval, print a prominent banner
                 if trade_executed_since_last_long and last_trade_summary:
                     print("\n******************************")
-                    print("*** STRATEGY EXECUTED (5min) ***")
+                    print(f"*** STRATEGY EXECUTED ({long_timeframe}min) ***")
                     print(last_trade_summary)
                     print("******************************\n")
                     trade_executed_since_last_long = False
@@ -274,14 +294,15 @@ def run():
             # When a 3-minute candle completes, evaluate entry using the 3-minute MAC.
             if completed_short is not None:
                 short_close = completed_short.get("close")
+                previous_short_close = candle_close(sma_candles_3min)
                 sma_candles_3min = append_completed_candle(sma_candles_3min, completed_short)
                 mac3min = mac_channel(sma_candles_3min)
                 if mac3min is None:
-                    print(f"MAC3MIN waiting for {indicators.MA_PERIOD} candles, current count={len(sma_candles_3min)}")
+                    print(f"MAC{short_timeframe}MIN waiting for {indicators.MA_PERIOD} candles, current count={len(sma_candles_3min)}")
 
-                print("\n===== 3MIN UPDATE =====")
+                print(f"\n===== {short_timeframe}MIN UPDATE =====")
                 print(f"SHORT_CANDLE_CLOSED: {completed_short}")
-                print_data("MAC3MIN", mac3min)
+                print_data(f"MAC{short_timeframe}MIN", mac3min)
 
                 # ensure we have enough data for MAC and no open position
                 if mac3min is not None:
@@ -302,7 +323,7 @@ def run():
                                 print(f"[EXIT ORDER NOT ACCEPTED] Keeping position open. response={response}")
 
                     if position is None:
-                        if short_close < mac3min["low"] and "SHORT" in enabled_sides:
+                        if crossed_below(previous_short_close, short_close, mac3min["low"]) and "SHORT" in enabled_sides:
                             signal = "SHORT"
                         else:
                             signal = None

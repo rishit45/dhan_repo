@@ -22,7 +22,7 @@ def _floor_time(dt, timeframe_minutes):
 
 def _combine_1min_candles(raw_candles, timeframe_minutes):
     if timeframe_minutes <= 1:
-        return raw_candles[-1:]
+        return raw_candles
 
     aggregated = []
     current_bucket = None
@@ -48,7 +48,7 @@ def _combine_1min_candles(raw_candles, timeframe_minutes):
 
 
 def _closed_candles_only(candles, timeframe_minutes, now=None):
-    now = now or datetime.now()
+    now = now or datetime.now(IST).replace(tzinfo=None)
     current_bucket = _floor_time(now, timeframe_minutes)
     return [candle for candle in candles if candle["time"] < current_bucket]
 
