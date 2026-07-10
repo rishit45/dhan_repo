@@ -63,59 +63,6 @@ def entry_check_action(position, side_enabled, raw_signal, price_confirms, entry
     return "enter"
 
 
-def _round_to_tradable_quantity(quantity, instrument):
-    lot_size = int(instrument.get("lot_size", 1))
-    quantity = int(quantity)
-    if lot_size <= 1:
-        return max(quantity, 1)
-    rounded = (quantity // lot_size) * lot_size
-    return max(rounded, lot_size)
-
-
-def quantity_with_trend_filter(config, instrument, side, ltp, trend_channel, trend_config):
-    base_quantity = get_quantity(config, ltp=ltp)
-    if not trend_config.get("enabled", True) or trend_channel is None:
-        print_data(
-            "TREND_QUANTITY_FILTER",
-            {
-                "side": side,
-                "ltp": ltp,
-                "base_quantity": base_quantity,
-                "final_quantity": base_quantity,
-                "reason": "disabled_or_mac_not_ready",
-                "trend_mac": trend_channel,
-            },
-        )
-        return base_quantity
-
-    ratio = float(trend_config.get("half_quantity_ratio", 0.5))
-    reason = "normal"
-    raw_quantity = base_quantity
-    if float(ltp) > float(trend_channel["high"]) and side == "SHORT":
-        raw_quantity = int(base_quantity * ratio)
-        reason = "one_hour_ltp_above_mac_high_short_half"
-    elif float(ltp) < float(trend_channel["low"]) and side == "LONG":
-        raw_quantity = int(base_quantity * ratio)
-        reason = "one_hour_ltp_below_mac_low_long_half"
-
-    final_quantity = _round_to_tradable_quantity(raw_quantity, instrument)
-    print_data(
-        "TREND_QUANTITY_FILTER",
-        {
-            "side": side,
-            "ltp": ltp,
-            "trend_mac_high": trend_channel["high"],
-            "trend_mac_low": trend_channel["low"],
-            "base_quantity": base_quantity,
-            "raw_quantity": raw_quantity,
-            "final_quantity": final_quantity,
-            "reason": reason,
-            "lot_size": instrument.get("lot_size"),
-        },
-    )
-    return final_quantity
-
-
 def place_entry(dhan, instrument, side, quantity, entry_config, quote, live_orders, config, edis_config=None):
     order_type = entry_config.get("order_type", "LIMIT").upper()
     price = 0 if order_type == "MARKET" else limit_price_for_entry(side, entry_config, quote)
@@ -210,6 +157,62 @@ def seed_sma_candles(closed_candles):
     return seeded
 
 
+def candle_stop_loss(side, candles, entry_candle_index, current_candle_index, buffer_points):
+    if entry_candle_index is None or current_candle_index is None:
+        return None
+    if not candles:
+        return None
+
+    entry_candle_index = int(entry_candle_index)
+    current_candle_index = int(current_candle_index)
+    candle_number = current_candle_index - entry_candle_index + 1
+    if candle_number <= 0:
+        return None
+
+    if candle_number <= 3:
+        reference_index = entry_candle_index
+    else:
+        reference_index = current_candle_index - 2
+
+    if reference_index < 0 or reference_index >= len(candles):
+        return None
+
+    reference_candle = candles[reference_index]
+    buffer_points = float(buffer_points)
+    if side == "LONG":
+        return float(reference_candle["low"]) - buffer_points
+    return float(reference_candle["high"]) + buffer_points
+
+
+def update_candle_stop(position, candles, current_candle_index, buffer_points):
+    if position is None:
+        return None
+    stop_loss = candle_stop_loss(
+        position["side"],
+        candles,
+        position.get("entry_candle_index"),
+        current_candle_index,
+        buffer_points,
+    )
+    if stop_loss is None:
+        return None
+    position["stop_loss"] = stop_loss
+    return stop_loss
+
+
+def candle_stop_exit(position, close_price):
+    if position is None or close_price is None:
+        return None
+    stop_loss = position.get("stop_loss")
+    if stop_loss is None:
+        return None
+    if position["side"] == "LONG" and float(close_price) <= float(stop_loss):
+        return "CANDLE_STOP_LOWER"
+    if position["side"] == "SHORT" and float(close_price) >= float(stop_loss):
+        return "CANDLE_STOP_UPPER"
+    return None
+
+
 def run():
     config = load_config()
     instrument = get_instrument(config)
@@ -220,14 +223,13 @@ def run():
     entry_config = config.get("entry", {})
     exit_config = config.get("exit", {})
     edis_config = config.get("edis", {})
-    trend_config = config.get("trend_quantity_filter", {})
     enabled_sides = set(entry_config.get("enabled_sides", ["LONG", "SHORT"]))
     mac_length = int(mac_config.get("length", 20))
+    candle_stop_points = float(exit_config.get("candle_stop_points", 3))
 
     # Short and long candle stores are fully driven by strategy_config.json.
     short_timeframe = int(candle_config.get("short_timeframe_minutes", 3))
     long_timeframe = int(candle_config.get("timeframe_minutes", 5))
-    trend_timeframe = int(trend_config.get("timeframe_minutes", 60))
 
     short_candles = CandleStore(
         timeframe_minutes=short_timeframe,
@@ -236,11 +238,6 @@ def run():
 
     long_candles = CandleStore(
         timeframe_minutes=long_timeframe,
-        history_len=candle_config.get("history_len", 200),
-    )
-
-    trend_candles = CandleStore(
-        timeframe_minutes=trend_timeframe,
         history_len=candle_config.get("history_len", 200),
     )
 
@@ -260,22 +257,12 @@ def run():
             periods=int(mac_length),
             history_days=7,
         )
-        trend_history = fetch_historical_intraday_candles(
-            dhan,
-            instrument,
-            interval=trend_timeframe,
-            periods=int(mac_length),
-            history_days=10,
-        )
         if long_history:
             long_candles.load_history(long_history)
             print(f"Seeded {len(long_history)} historical {long_timeframe}-minute candles from Dhan")
         if short_history:
             short_candles.load_history(short_history)
             print(f"Seeded {len(short_history)} historical {short_timeframe}-minute candles from Dhan")
-        if trend_history:
-            trend_candles.load_history(trend_history)
-            print(f"Seeded {len(trend_history)} historical {trend_timeframe}-minute trend candles from Dhan")
     except Exception as exc:
         print(f"Could not seed Dhan intraday candle history: {exc}")
 
@@ -285,25 +272,22 @@ def run():
     # initialize SMA candle containers from the already-closed historical candles
     sma_candles_5min = seed_sma_candles(long_candles.closed_candles)
     sma_candles_3min = seed_sma_candles(short_candles.closed_candles)
-    sma_candles_60min = seed_sma_candles(trend_candles.closed_candles)
     mac5min = mac_channel(sma_candles_5min)
     mac3min = mac_channel(sma_candles_3min)
-    mac60min = mac_channel(sma_candles_60min)
 
     print(f"Seeded {len(sma_candles_5min)} historical {long_timeframe}-min candles and {len(sma_candles_3min)} historical {short_timeframe}-min candles for MA.")
     print_data(f"INITIAL_MAC{long_timeframe}MIN", mac5min)
     print_data(f"INITIAL_MAC{short_timeframe}MIN", mac3min)
-    print_data(f"INITIAL_MAC{trend_timeframe}MIN_TREND", mac60min)
 
     position = None
     trade_executed_since_last_long = False
     last_trade_summary = None
 
     start_time = datetime.now()
-    print(f"Strategy 1 started at {start_time.isoformat()}")
+    print(f"Crude oil strategy started at {start_time.isoformat()}")
     print("Dhan does not provide Moving Average Channel directly; calculating MAC locally.")
-    print_data("STRATEGY_1_CONFIG", config)
-    print_data("STRATEGY_1_INSTRUMENT", instrument)
+    print_data("CRUDE_OIL_STRATEGY_CONFIG", config)
+    print_data("CRUDE_OIL_STRATEGY_INSTRUMENT", instrument)
     startup_quote = fetch_quote(dhan, instrument)
     print_data("STARTUP_QUOTE", startup_quote)
     preflight_live_trading(dhan, config, instrument, startup_quote)
@@ -313,16 +297,28 @@ def run():
         try:
             quote = fetch_quote(dhan, instrument)
             ltp = quote["ltp"]
+
+            point_exit_reason = should_exit(position, ltp, exit_config)
+            if point_exit_reason:
+                print(f"[POINT EXIT] {point_exit_reason} position={position} ltp={ltp}")
+                response = place_exit(dhan, instrument, position, quote, live_orders, edis_config)
+                if order_accepted(response, live_orders):
+                    try:
+                        last_trade_summary = (
+                            f"EXIT {position['side']} qty={position['quantity']} "
+                            f"price={ltp} reason={point_exit_reason}"
+                        )
+                        trade_executed_since_last_long = True
+                    except Exception:
+                        last_trade_summary = f"EXIT position price={ltp} reason={point_exit_reason}"
+                        trade_executed_since_last_long = True
+                    position = None
+                else:
+                    print(f"[POINT EXIT ORDER NOT ACCEPTED] Keeping position open. response={response}")
+
             # update both candle stores with the latest ltp
             completed_short = short_candles.update(ltp)
             completed_long = long_candles.update(ltp)
-            completed_trend = trend_candles.update(ltp)
-            if completed_trend is not None:
-                sma_candles_60min = append_completed_candle(sma_candles_60min, completed_trend)
-                mac60min = mac_channel(sma_candles_60min)
-                print(f"\n===== {trend_timeframe}MIN TREND UPDATE =====")
-                print(f"TREND_CANDLE_CLOSED: {completed_trend}")
-                print_data(f"MAC{trend_timeframe}MIN_TREND", mac60min)
             # compute and print MAC and candles only when a long candle closes
             if completed_long is not None:
                 previous_long_close = candle_close(sma_candles_5min)
@@ -350,11 +346,16 @@ def run():
                     long_channel = mac5min
                     long_open = completed_long.get("open")
                     long_close = completed_long.get("close")
+                    long_candle_index = len(sma_candles_5min) - 1
                     if position is not None and position["side"] == "LONG":
                         if long_close < long_channel["low"]:
                             exit_reason = "MAC_BREAK_LOWER"
                         else:
-                            exit_reason = should_exit(position, ltp, exit_config)
+                            exit_reason = None
+                            stop_loss = update_candle_stop(position, sma_candles_5min, long_candle_index, candle_stop_points)
+                            if stop_loss is not None:
+                                print_data("LONG_CANDLE_STOP", {"stop_loss": stop_loss, "candle_index": long_candle_index})
+                            exit_reason = candle_stop_exit(position, long_close)
 
                         if exit_reason:
                             response = place_exit(dhan, instrument, position, quote, live_orders, edis_config)
@@ -424,14 +425,7 @@ def run():
                                     signal = None
 
                         if signal:
-                            quantity = quantity_with_trend_filter(
-                                config,
-                                instrument,
-                                signal,
-                                ltp,
-                                mac60min,
-                                trend_config,
-                            )
+                            quantity = get_quantity(config, ltp=ltp)
                             response = place_entry(
                                 dhan,
                                 instrument,
@@ -448,36 +442,16 @@ def run():
                                     "side": signal,
                                     "entry_price": ltp,
                                     "quantity": quantity,
+                                    "entry_candle_index": long_candle_index,
                                 }
+                                stop_loss = update_candle_stop(position, sma_candles_5min, long_candle_index, candle_stop_points)
+                                print_data("LONG_ENTRY_STOP", {"stop_loss": stop_loss, "candle_index": long_candle_index})
                                 trade_executed_since_last_long = True
                                 last_trade_summary = f"ENTRY {signal} qty={quantity} price={ltp}"
                             else:
                                 print(f"[ENTRY ORDER NOT ACCEPTED] No position opened. response={response}")
 
-                # if any trade executed in the last long interval, print a prominent banner
-                if trade_executed_since_last_long and last_trade_summary:
-                    print("\n******************************")
-                    print(f"*** STRATEGY EXECUTED ({long_timeframe}min) ***")
-                    print(last_trade_summary)
-                    print("******************************\n")
-                    trade_executed_since_last_long = False
-                    last_trade_summary = None
-
-            exit_reason = should_exit(position, ltp, exit_config)
-            if exit_reason:
-                print(f"[EXIT] {exit_reason} position={position}")
-                response = place_exit(dhan, instrument, position, quote, live_orders, edis_config)
-                if order_accepted(response, live_orders):
-                    try:
-                        last_trade_summary = f"EXIT {position['side']} qty={position['quantity']} price={quote['ltp']} reason={exit_reason}"
-                        trade_executed_since_last_long = True
-                    except Exception:
-                        last_trade_summary = f"EXIT position price={quote['ltp']} reason={exit_reason}"
-                        trade_executed_since_last_long = True
-                    position = None
-                else:
-                    print(f"[EXIT ORDER NOT ACCEPTED] Keeping position open. response={response}")
-            # When a 3-minute candle completes, evaluate entry using the 3-minute MAC.
+            # When a short-timeframe candle completes, evaluate entry using its MAC.
             if completed_short is not None:
                 short_open = completed_short.get("open")
                 short_close = completed_short.get("close")
@@ -493,12 +467,17 @@ def run():
 
                 # ensure we have enough data for MAC and no open position
                 if mac3min is not None:
-                    # 3-min MAC entry/exit logic for short trades only.
+                    # Short-timeframe MAC entry/exit logic for short trades only.
+                    short_candle_index = len(sma_candles_3min) - 1
                     if position is not None and position["side"] == "SHORT":
                         if short_close > mac3min["high"]:
                             exit_reason = "MAC_BREAK_UPPER"
                         else:
-                            exit_reason = should_exit(position, ltp, exit_config)
+                            exit_reason = None
+                            stop_loss = update_candle_stop(position, sma_candles_3min, short_candle_index, candle_stop_points)
+                            if stop_loss is not None:
+                                print_data("SHORT_CANDLE_STOP", {"stop_loss": stop_loss, "candle_index": short_candle_index})
+                            exit_reason = candle_stop_exit(position, short_close)
 
                         if exit_reason:
                             response = place_exit(dhan, instrument, position, quote, live_orders, edis_config)
@@ -568,14 +547,7 @@ def run():
                                     signal = None
 
                         if signal:
-                            quantity = quantity_with_trend_filter(
-                                config,
-                                instrument,
-                                signal,
-                                ltp,
-                                mac60min,
-                                trend_config,
-                            )
+                            quantity = get_quantity(config, ltp=ltp)
                             response = place_entry(
                                 dhan,
                                 instrument,
@@ -592,11 +564,22 @@ def run():
                                     "side": signal,
                                     "entry_price": ltp,
                                     "quantity": quantity,
+                                    "entry_candle_index": short_candle_index,
                                 }
+                                stop_loss = update_candle_stop(position, sma_candles_3min, short_candle_index, candle_stop_points)
+                                print_data("SHORT_ENTRY_STOP", {"stop_loss": stop_loss, "candle_index": short_candle_index})
                                 trade_executed_since_last_long = True
                                 last_trade_summary = f"ENTRY {signal} qty={quantity} price={ltp}"
                             else:
                                 print(f"[ENTRY ORDER NOT ACCEPTED] No position opened. response={response}")
+
+            if trade_executed_since_last_long and last_trade_summary:
+                print("\n******************************")
+                print("*** CRUDE OIL STRATEGY EXECUTED ***")
+                print(last_trade_summary)
+                print("******************************\n")
+                trade_executed_since_last_long = False
+                last_trade_summary = None
 
         except Exception as exc:
             print(f"[STRATEGY ERROR] {exc}")

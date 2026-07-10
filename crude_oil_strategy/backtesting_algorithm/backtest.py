@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-STRATEGY_BACKTEST = ROOT / "strategy_" / "backtest.py"
+STRATEGY_BACKTEST = ROOT / "backtest.py"
 
 
 def main():

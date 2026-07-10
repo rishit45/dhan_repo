@@ -7,8 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
-STRATEGY_DIR = ROOT / "strategy_"
+STRATEGY_DIR = Path(__file__).resolve().parent
 if str(STRATEGY_DIR) not in sys.path:
     sys.path.insert(0, str(STRATEGY_DIR))
 
@@ -39,12 +38,6 @@ class Trade:
     margin_quantity: int | None = None
     margin_required: float | None = None
     margin_response: object | None = None
-    trend_quantity_reason: str | None = None
-    trend_mac_high: float | None = None
-    trend_mac_low: float | None = None
-    trend_ltp: float | None = None
-    base_quantity: int | None = None
-    raw_quantity: int | None = None
 
     @property
     def points(self):
@@ -136,7 +129,9 @@ def aggregate_candles(candles, timeframe_minutes):
 
 def fetch_1min_history(dhan, instrument, start_dt, end_dt, warmup_days=10):
     from_date = (start_dt - timedelta(days=warmup_days)).date().isoformat()
-    to_date = end_dt.date().isoformat()
+    # MCX evening-session candles can require the next API date to appear in
+    # Dhan's intraday response, even when their candle timestamps are same-day.
+    to_date = (end_dt + timedelta(days=1)).date().isoformat()
     security_id = _security_id_for_quote(instrument["security_id"])
     exchange_segment = instrument["exchange_segment"]
     last_error = None
@@ -278,64 +273,6 @@ def calculate_entry_margin(dhan, config, instrument, side, quantity, price):
         }
 
 
-def _round_to_tradable_quantity(quantity, instrument):
-    lot_size = int(instrument.get("lot_size", 1))
-    quantity = int(quantity)
-    if lot_size <= 1:
-        return max(quantity, 1)
-    rounded = (quantity // lot_size) * lot_size
-    return max(rounded, lot_size)
-
-
-def trend_quantity_decision(config, instrument, side, ltp, trend_channel, trend_config):
-    base_quantity = get_quantity(config, ltp=ltp)
-    if not trend_config.get("enabled", True) or trend_channel is None:
-        return {
-            "quantity": base_quantity,
-            "base_quantity": base_quantity,
-            "raw_quantity": base_quantity,
-            "trend_quantity_reason": "disabled_or_mac_not_ready",
-            "trend_mac_high": None if trend_channel is None else trend_channel["high"],
-            "trend_mac_low": None if trend_channel is None else trend_channel["low"],
-            "trend_ltp": float(ltp),
-        }
-
-    ratio = float(trend_config.get("half_quantity_ratio", 0.5))
-    raw_quantity = base_quantity
-    reason = "normal_between_or_same_direction"
-    if float(ltp) > float(trend_channel["high"]) and side == "SHORT":
-        raw_quantity = int(base_quantity * ratio)
-        reason = "one_hour_ltp_above_mac_high_short_half"
-    elif float(ltp) < float(trend_channel["low"]) and side == "LONG":
-        raw_quantity = int(base_quantity * ratio)
-        reason = "one_hour_ltp_below_mac_low_long_half"
-    elif float(ltp) > float(trend_channel["high"]) and side == "LONG":
-        reason = "one_hour_ltp_above_mac_high_long_normal"
-    elif float(ltp) < float(trend_channel["low"]) and side == "SHORT":
-        reason = "one_hour_ltp_below_mac_low_short_normal"
-
-    return {
-        "quantity": _round_to_tradable_quantity(raw_quantity, instrument),
-        "base_quantity": base_quantity,
-        "raw_quantity": raw_quantity,
-        "trend_quantity_reason": reason,
-        "trend_mac_high": trend_channel["high"],
-        "trend_mac_low": trend_channel["low"],
-        "trend_ltp": float(ltp),
-    }
-
-
-def quantity_with_trend_filter(config, instrument, side, ltp, trend_channel, trend_config):
-    return trend_quantity_decision(
-        config,
-        instrument,
-        side,
-        ltp,
-        trend_channel,
-        trend_config,
-    )["quantity"]
-
-
 def close_position(position, exit_time, exit_price, reason):
     return Trade(
         side=position["side"],
@@ -348,13 +285,56 @@ def close_position(position, exit_time, exit_price, reason):
         margin_quantity=position.get("margin_quantity"),
         margin_required=position.get("margin_required"),
         margin_response=position.get("margin_response"),
-        trend_quantity_reason=position.get("trend_quantity_reason"),
-        trend_mac_high=position.get("trend_mac_high"),
-        trend_mac_low=position.get("trend_mac_low"),
-        trend_ltp=position.get("trend_ltp"),
-        base_quantity=position.get("base_quantity"),
-        raw_quantity=position.get("raw_quantity"),
     )
+
+
+def candle_stop_loss(side, candles, entry_candle_index, current_candle_index, buffer_points):
+    if entry_candle_index is None or current_candle_index is None or not candles:
+        return None
+
+    entry_candle_index = int(entry_candle_index)
+    current_candle_index = int(current_candle_index)
+    candle_number = current_candle_index - entry_candle_index + 1
+    if candle_number <= 0:
+        return None
+
+    if candle_number <= 3:
+        reference_index = entry_candle_index
+    else:
+        reference_index = current_candle_index - 2
+
+    if reference_index < 0 or reference_index >= len(candles):
+        return None
+
+    reference_candle = candles[reference_index]
+    if side == "LONG":
+        return float(reference_candle["low"]) - float(buffer_points)
+    return float(reference_candle["high"]) + float(buffer_points)
+
+
+def update_candle_stop(position, candles, current_candle_index, buffer_points):
+    if position is None:
+        return None
+    stop_loss = candle_stop_loss(
+        position["side"],
+        candles,
+        position.get("entry_candle_index"),
+        current_candle_index,
+        buffer_points,
+    )
+    if stop_loss is not None:
+        position["stop_loss"] = stop_loss
+    return stop_loss
+
+
+def candle_stop_exit(position, close_price):
+    if position is None or close_price is None or position.get("stop_loss") is None:
+        return None
+    if position["side"] == "LONG" and float(close_price) <= float(position["stop_loss"]):
+        return "CANDLE_STOP_LOWER"
+    if position["side"] == "SHORT" and float(close_price) >= float(position["stop_loss"]):
+        return "CANDLE_STOP_UPPER"
+    return None
 
 
 def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, short_timeframe, mode, dhan=None):
@@ -368,18 +348,14 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
     indicators.MA_PERIOD = int(config.get("moving_average_channel", {}).get("length", 20))
     instrument = get_instrument(config)
     entry_config = config.get("entry", {})
-    enabled_sides = set(config.get("entry", {}).get("enabled_sides", ["LONG", "SHORT"]))
+    enabled_sides = set(entry_config.get("enabled_sides", ["LONG", "SHORT"]))
     exit_config = config.get("exit", {})
-    trend_config = config.get("trend_quantity_filter", {})
-    trend_timeframe = int(trend_config.get("timeframe_minutes", 60))
+    candle_stop_points = float(exit_config.get("candle_stop_points", 3))
 
     long_store = CandleStore(timeframe_minutes=long_timeframe, history_len=1000)
     short_store = CandleStore(timeframe_minutes=short_timeframe, history_len=1000)
-    trend_store = CandleStore(timeframe_minutes=trend_timeframe, history_len=1000)
     long_rows = []
     short_rows = []
-    trend_rows = []
-    trend_channel = None
     trades = []
     position = None
 
@@ -390,24 +366,18 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
     for tick in one_min_candles:
         tick_time = tick["time"]
         ltp = float(tick["close"])
-        completed_long = long_store.update(ltp, tick_time=tick_time)
-        completed_short = short_store.update(ltp, tick_time=tick_time)
-        completed_trend = trend_store.update(ltp, tick_time=tick_time)
 
-        if completed_trend is not None:
-            append_candle(trend_rows, completed_trend)
-            trend_channel = mac_channel(trend_rows)
-            if mode == "replay" and tick_time >= start_dt:
-                print(f"[{tick_time}] TREND TF CLOSE {completed_trend['close']} MAC={trend_channel}")
-
-        if position is not None:
-            exit_reason = should_exit(position, ltp, exit_config)
-            if exit_reason and tick_time >= start_dt:
-                trade = close_position(position, tick_time, ltp, exit_reason)
+        if tick_time >= start_dt and position is not None:
+            point_exit_reason = should_exit(position, ltp, exit_config)
+            if point_exit_reason:
+                trade = close_position(position, tick_time, ltp, point_exit_reason)
                 trades.append(trade)
                 if mode == "replay":
                     print_trade("EXIT", trade)
                 position = None
+
+        completed_long = long_store.update(ltp, tick_time=tick_time)
+        completed_short = short_store.update(ltp, tick_time=tick_time)
 
         if completed_long is not None:
             previous = last_close(long_rows)
@@ -415,6 +385,7 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
             channel = mac_channel(long_rows)
             current_open = float(completed_long["open"])
             current = float(completed_long["close"])
+            current_index = len(long_rows) - 1
             if mode == "replay" and tick_time >= start_dt:
                 print(f"[{tick_time}] LONG TF CLOSE {current} MAC={channel}")
             if tick_time >= start_dt and channel and position is not None and position["side"] == "LONG":
@@ -424,6 +395,17 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
                     if mode == "replay":
                         print_trade("EXIT", trade)
                     position = None
+                else:
+                    stop_loss = update_candle_stop(position, long_rows, current_index, candle_stop_points)
+                    if mode == "replay" and stop_loss is not None:
+                        print(f"[{tick_time}] LONG STOP {stop_loss}")
+                    exit_reason = candle_stop_exit(position, current)
+                    if exit_reason:
+                        trade = close_position(position, tick_time, current, exit_reason)
+                        trades.append(trade)
+                        if mode == "replay":
+                            print_trade("EXIT", trade)
+                        position = None
             if tick_time >= start_dt and channel and position is None:
                 signal = (
                     crossed_above(previous, current, channel["high"])
@@ -432,29 +414,22 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
                 if signal and not entry_price_confirms_signal("LONG", ltp, channel) and entry_price_confirmation_blocks(entry_config):
                     signal = False
                 if signal:
-                    trend_decision = trend_quantity_decision(
-                        config,
-                        instrument,
-                        "LONG",
-                        ltp,
-                        trend_channel,
-                        trend_config,
-                    )
-                    quantity = trend_decision["quantity"]
+                    quantity = get_quantity(config, ltp=ltp)
                     margin = calculate_entry_margin(dhan, config, instrument, "LONG", quantity, ltp)
                     position = {
                         "side": "LONG",
                         "entry_time": tick_time,
                         "entry_price": ltp,
                         "quantity": quantity,
-                        **trend_decision,
+                        "entry_candle_index": current_index,
                         **margin,
                     }
+                    update_candle_stop(position, long_rows, current_index, candle_stop_points)
                     if mode == "replay":
                         print(
                             f"[{tick_time}] ENTRY LONG price={ltp} qty={quantity} "
-                            f"trend_reason={trend_decision['trend_quantity_reason']} "
-                            f"margin_qty={margin['margin_quantity']} margin_required={margin['margin_required']}"
+                            f"margin_qty={margin['margin_quantity']} margin_required={margin['margin_required']} "
+                            f"stop={position.get('stop_loss')}"
                         )
 
         if completed_short is not None:
@@ -463,6 +438,7 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
             channel = mac_channel(short_rows)
             current_open = float(completed_short["open"])
             current = float(completed_short["close"])
+            current_index = len(short_rows) - 1
             if mode == "replay" and tick_time >= start_dt:
                 print(f"[{tick_time}] SHORT TF CLOSE {current} MAC={channel}")
             if tick_time >= start_dt and channel and position is not None and position["side"] == "SHORT":
@@ -472,6 +448,17 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
                     if mode == "replay":
                         print_trade("EXIT", trade)
                     position = None
+                else:
+                    stop_loss = update_candle_stop(position, short_rows, current_index, candle_stop_points)
+                    if mode == "replay" and stop_loss is not None:
+                        print(f"[{tick_time}] SHORT STOP {stop_loss}")
+                    exit_reason = candle_stop_exit(position, current)
+                    if exit_reason:
+                        trade = close_position(position, tick_time, current, exit_reason)
+                        trades.append(trade)
+                        if mode == "replay":
+                            print_trade("EXIT", trade)
+                        position = None
             if tick_time >= start_dt and channel and position is None:
                 signal = (
                     crossed_below(previous, current, channel["low"])
@@ -480,29 +467,22 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
                 if signal and not entry_price_confirms_signal("SHORT", ltp, channel) and entry_price_confirmation_blocks(entry_config):
                     signal = False
                 if signal:
-                    trend_decision = trend_quantity_decision(
-                        config,
-                        instrument,
-                        "SHORT",
-                        ltp,
-                        trend_channel,
-                        trend_config,
-                    )
-                    quantity = trend_decision["quantity"]
+                    quantity = get_quantity(config, ltp=ltp)
                     margin = calculate_entry_margin(dhan, config, instrument, "SHORT", quantity, ltp)
                     position = {
                         "side": "SHORT",
                         "entry_time": tick_time,
                         "entry_price": ltp,
                         "quantity": quantity,
-                        **trend_decision,
+                        "entry_candle_index": current_index,
                         **margin,
                     }
+                    update_candle_stop(position, short_rows, current_index, candle_stop_points)
                     if mode == "replay":
                         print(
                             f"[{tick_time}] ENTRY SHORT price={ltp} qty={quantity} "
-                            f"trend_reason={trend_decision['trend_quantity_reason']} "
-                            f"margin_qty={margin['margin_quantity']} margin_required={margin['margin_required']}"
+                            f"margin_qty={margin['margin_quantity']} margin_required={margin['margin_required']} "
+                            f"stop={position.get('stop_loss')}"
                         )
 
         if mode == "replay" and tick_time >= start_dt:
@@ -521,7 +501,8 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
         "end": end_dt,
         "long_timeframe": long_timeframe,
         "short_timeframe": short_timeframe,
-        "trend_timeframe": trend_timeframe,
+        "mac_length": indicators.MA_PERIOD,
+        "candle_stop_points": candle_stop_points,
         "trades": trades,
     }
 
@@ -545,7 +526,8 @@ def print_summary(result):
     print(f"Range: {result['start']} -> {result['end']}")
     print(f"Long timeframe: {result['long_timeframe']} min")
     print(f"Short timeframe: {result['short_timeframe']} min")
-    print(f"Trend quantity timeframe: {result['trend_timeframe']} min")
+    print(f"MAC length: {result['mac_length']}")
+    print(f"Candle stop points: {result['candle_stop_points']}")
     print(f"Trades: {len(trades)}")
     print(f"Winners: {len(winners)}")
     print(f"Losers: {len(losers)}")
@@ -559,10 +541,7 @@ def print_summary(result):
                 f"{idx}. {trade.side} entry_time={trade.entry_time} entry={trade.entry_price} "
                 f"exit_time={trade.exit_time} exit={trade.exit_price} "
                 f"points={trade.points:.2f} pnl={trade.pnl:.2f} "
-                f"base_qty={trade.base_quantity} raw_qty={trade.raw_quantity} "
                 f"margin_qty={trade.margin_quantity} margin_required={trade.margin_required} "
-                f"trend_ltp={trade.trend_ltp} trend_high={trade.trend_mac_high} "
-                f"trend_low={trade.trend_mac_low} trend_reason={trade.trend_quantity_reason} "
                 f"reason={trade.reason}"
             )
 
