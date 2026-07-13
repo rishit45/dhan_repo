@@ -15,6 +15,31 @@ def should_exit(position, ltp, exit_config):
 
     pnl = points * quantity
 
+    if mode in {"flexible", "independent"}:
+        target_type = str(exit_config.get("target_type", "points")).lower()
+        stop_loss_type = str(exit_config.get("stop_loss_type", "points")).lower()
+        if target_type not in {"points", "pnl"}:
+            raise ValueError("exit.target_type must be 'points' or 'pnl'")
+        if stop_loss_type not in {"points", "pnl"}:
+            raise ValueError("exit.stop_loss_type must be 'points' or 'pnl'")
+
+        target = float(exit_config.get(f"target_{target_type}", 0))
+        stop = float(exit_config.get(f"stop_loss_{stop_loss_type}", 0))
+        if target and (points >= target if target_type == "points" else pnl >= target):
+            return "TARGET_POINTS" if target_type == "points" else "TARGET_PNL"
+        if stop and (points <= -stop if stop_loss_type == "points" else pnl <= -stop):
+            return "STOP_POINTS" if stop_loss_type == "points" else "STOP_PNL"
+        return None
+
+    if mode in {"target_points_stop_loss_pnl", "points_target_pnl_stop", "mixed"}:
+        target_points = float(exit_config.get("target_points", 0))
+        stop_loss_pnl = float(exit_config.get("stop_loss_pnl", 0))
+        if target_points and points >= target_points:
+            return "TARGET_POINTS"
+        if stop_loss_pnl and pnl <= -stop_loss_pnl:
+            return "STOP_PNL"
+        return None
+
     if mode == "pnl":
         target = float(exit_config.get("target_pnl", 0))
         stop = float(exit_config.get("stop_loss_pnl", 0))

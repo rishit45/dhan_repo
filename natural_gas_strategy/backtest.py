@@ -70,11 +70,29 @@ def parse_datetime(prompt):
             try:
                 parsed = datetime.strptime(value, fmt)
                 if fmt == "%Y-%m-%d":
-                    return parsed.replace(hour=0, minute=0, second=0)
-                return parsed
+                    return parsed.replace(hour=0, minute=0, second=0), True
+                return parsed, False
             except ValueError:
                 continue
         print("Use format YYYY-MM-DD HH:MM, for example 2026-07-01 09:00")
+
+
+def apply_single_day_trade_window(start_dt, end_dt, start_was_date_only, end_was_date_only, config):
+    """Apply JSON daily times when the user supplies one date for both ends."""
+    if not (start_was_date_only and end_was_date_only and start_dt.date() == end_dt.date()):
+        return start_dt, end_dt
+
+    trade_start, trade_stop = get_backtest_trade_window(config)
+    if trade_start is None:
+        raise ValueError(
+            "A same-day date-only backtest needs backtest.trade_start_time and backtest.trade_stop_time in strategy_config.json"
+        )
+    start_dt = datetime.combine(start_dt.date(), trade_start)
+    end_dt = datetime.combine(end_dt.date(), trade_stop)
+    if end_dt <= start_dt:
+        # Supports a configured overnight session such as 18:00 to 05:00.
+        end_dt += timedelta(days=1)
+    return start_dt, end_dt
 
 
 def ask_int(prompt, default):
@@ -215,8 +233,14 @@ class HistoricalCandleAggregator:
 
 
 def fetch_1min_history(dhan, instrument, start_dt, end_dt, warmup_days=10):
-    from_date = (start_dt - timedelta(days=warmup_days)).date().isoformat()
-    to_date = end_dt.date().isoformat()
+    # Dhan accepts intraday timestamps.  Supplying date-only values can omit
+    # evening MCX candles, so retain the requested end time (for example,
+    # 23:30) instead of letting the API choose a day cutoff.
+    from_dt = (start_dt - timedelta(days=warmup_days)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    from_date = from_dt.strftime("%Y-%m-%d %H:%M:%S")
+    to_date = end_dt.replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
     security_id = _security_id_for_quote(instrument["security_id"])
     exchange_segment = instrument["exchange_segment"]
     last_error = None
@@ -801,8 +825,15 @@ def print_summary(result):
 
 def main():
     config = load_config()
-    start_dt = parse_datetime("Start date/time: ")
-    end_dt = parse_datetime("End date/time: ")
+    start_dt, start_was_date_only = parse_datetime("Start date/time: ")
+    end_dt, end_was_date_only = parse_datetime("End date/time: ")
+    start_dt, end_dt = apply_single_day_trade_window(
+        start_dt,
+        end_dt,
+        start_was_date_only,
+        end_was_date_only,
+        config,
+    )
     if end_dt <= start_dt:
         raise ValueError("End date/time must be after start date/time")
 

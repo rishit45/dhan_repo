@@ -124,8 +124,11 @@ def _history_instrument_type_candidates(instrument):
 def fetch_historical_intraday_candles(dhan, instrument, interval, periods=20, history_days=7):
     security_id = _security_id_for_quote(instrument["security_id"])
     exchange_segment = instrument["exchange_segment"]
-    from_date = (datetime.now() - timedelta(days=history_days)).date().isoformat()
-    to_date = datetime.now().date().isoformat()
+    now = datetime.now(IST).replace(tzinfo=None, second=0, microsecond=0)
+    from_dt = (now - timedelta(days=history_days)).replace(hour=0, minute=0)
+    # Use exact timestamps so MCX evening-session candles are included.
+    from_date = from_dt.strftime("%Y-%m-%d %H:%M:%S")
+    to_date = now.strftime("%Y-%m-%d %H:%M:%S")
     candidate_types = _history_instrument_type_candidates(instrument)
     timeframe_minutes = int(interval)
     api_interval = timeframe_minutes if timeframe_minutes in {1, 5, 15, 25, 60} else 1
