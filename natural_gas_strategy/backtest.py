@@ -402,6 +402,8 @@ def trend_quantity_decision(config, instrument, side, ltp, trend_channel, trend_
         reason = "one_hour_ltp_above_mac_high_long_normal"
     elif float(ltp) < float(trend_channel["low"]) and side == "SHORT":
         reason = "one_hour_ltp_below_mac_low_short_normal"
+    elif  float(trend_channel["low"])<float(ltp) < float(trend_channel["high"]):
+        raw_quantity= 0
 
     return {
         "quantity": 0 if raw_quantity <= 0 else _round_to_tradable_quantity(raw_quantity, instrument),
