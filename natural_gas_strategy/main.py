@@ -2,6 +2,7 @@ import time
 from datetime import datetime
 
 from buy import place_buy_order
+from candle_diagnostics import build_candle_diagnostic
 from candles import CandleStore
 from config_loader import get_instrument, get_quantity, live_orders_enabled, load_config
 from debug import print_data
@@ -76,7 +77,7 @@ def quantity_with_trend_filter(config, instrument, side, ltp, trend_channel, tre
     base_quantity = get_quantity(config, ltp=ltp)
     if not trend_config.get("enabled", True) or trend_channel is None:
         print_data(
-            "TREND_QUANTITY_FILTER",
+            "LONG_SHORT_QUANTITY_CHECKER",
             {
                 "side": side,
                 "ltp": ltp,
@@ -109,7 +110,7 @@ def quantity_with_trend_filter(config, instrument, side, ltp, trend_channel, tre
 
     final_quantity = 0 if raw_quantity <= 0 else _round_to_tradable_quantity(raw_quantity, instrument)
     print_data(
-        "TREND_QUANTITY_FILTER",
+        "LONG_SHORT_QUANTITY_CHECKER",
         {
             "side": side,
             "ltp": ltp,
@@ -260,7 +261,7 @@ def run():
     entry_config = config.get("entry", {})
     exit_config = config.get("exit", {})
     edis_config = config.get("edis", {})
-    trend_config = config.get("trend_quantity_filter", {})
+    trend_config = config.get("long_short_quantity_checker", {})
     daily_target_config = config.get("daily_target", {})
     enabled_sides = set(entry_config.get("enabled_sides", ["LONG", "SHORT"]))
     mac_length = int(mac_config.get("length", 20))
@@ -392,15 +393,25 @@ def run():
                     print(f"[EXIT ORDER NOT ACCEPTED] Daily target hit but position kept open. response={response}")
 
             # update both candle stores with the latest ltp
-            completed_short = short_candles.update(ltp)
-            completed_long = long_candles.update(ltp)
-            completed_trend = trend_candles.update(ltp)
+            completed_short = short_candles.update(
+                ltp, tick_time=now, best_bid=quote.get("best_bid"), best_ask=quote.get("best_ask")
+            )
+            completed_long = long_candles.update(
+                ltp, tick_time=now, best_bid=quote.get("best_bid"), best_ask=quote.get("best_ask")
+            )
+            completed_trend = trend_candles.update(
+                ltp, tick_time=now, best_bid=quote.get("best_bid"), best_ask=quote.get("best_ask")
+            )
             if completed_trend is not None:
                 sma_candles_60min = append_completed_candle(sma_candles_60min, completed_trend)
                 mac60min = mac_channel(sma_candles_60min)
                 print(f"\n===== {trend_timeframe}MIN TREND UPDATE =====")
                 print(f"TREND_CANDLE_CLOSED: {completed_trend}")
                 print_data(f"MAC{trend_timeframe}MIN_TREND", mac60min)
+                print_data(
+                    "CANDLE_DIAGNOSTIC",
+                    build_candle_diagnostic(trend_timeframe, completed_trend, mac60min),
+                )
             # compute and print MAC and candles only when a long candle closes
             if completed_long is not None:
                 previous_long_close = candle_close(sma_candles_5min)
@@ -422,6 +433,10 @@ def run():
                 if last_short is not None:
                     print(f"LAST_SHORT_CANDLE: {last_short}")
                 print_data(f"MAC{long_timeframe}MIN", mac5min)
+                print_data(
+                    "CANDLE_DIAGNOSTIC",
+                    build_candle_diagnostic(long_timeframe, completed_long, mac5min),
+                )
 
                 # 5-min MAC entry/exit logic for long trades only.
                 if mac5min is not None:
@@ -593,6 +608,10 @@ def run():
                 print(f"\n===== {short_timeframe}MIN UPDATE =====")
                 print(f"SHORT_CANDLE_CLOSED: {completed_short}")
                 print_data(f"MAC{short_timeframe}MIN", mac3min)
+                print_data(
+                    "CANDLE_DIAGNOSTIC",
+                    build_candle_diagnostic(short_timeframe, completed_short, mac3min),
+                )
 
                 # ensure we have enough data for MAC and no open position
                 if mac3min is not None:

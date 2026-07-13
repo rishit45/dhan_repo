@@ -12,21 +12,31 @@ class CandleStore:
         self.current_last_price = None
         self.completed_candle = None
 
-    def update(self, price, tick_time=None):
+    def update(self, price, tick_time=None, best_bid=None, best_ask=None):
+        """Add an LTP tick and its optional top-of-book quote to the candle.
+
+        ``best_bid`` and ``best_ask`` are retained as the latest quote seen in
+        each candle.  This lets the strategy explain a completed LTP candle
+        using the bid/ask that was actually available at its close, instead of
+        looking up a later quote after the candle has finished.
+        """
         tick_time = tick_time or datetime.now()
         price = float(price)
+        best_bid = self._as_price(best_bid)
+        best_ask = self._as_price(best_ask)
         candle_time = self._floor_time(tick_time)
         self.completed_candle = None
 
         if self.current_candle is None:
             self.current_time = candle_time
-            self.current_candle = self._new_candle(candle_time, price)
+            self.current_candle = self._new_candle(candle_time, price, best_bid, best_ask)
             self.current_last_price = price
             return None
 
         if candle_time == self.current_time:
             self.current_candle["high"] = max(self.current_candle["high"], price)
             self.current_candle["low"] = min(self.current_candle["low"], price)
+            self._update_quote(best_bid, best_ask)
             self.current_last_price = price
             return None
 
@@ -34,7 +44,7 @@ class CandleStore:
         self.closed_candles.append(self.current_candle)
         self.completed_candle = self.current_candle
         self.current_time = candle_time
-        self.current_candle = self._new_candle(candle_time, price)
+        self.current_candle = self._new_candle(candle_time, price, best_bid, best_ask)
         self.current_last_price = price
         return self.completed_candle
 
@@ -121,11 +131,30 @@ class CandleStore:
         candle_start = minutes_since_start - (minutes_since_start % self.timeframe_minutes)
         return day_start + timedelta(minutes=candle_start)
 
-    def _new_candle(self, candle_time, price):
+    @staticmethod
+    def _as_price(value):
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _update_quote(self, best_bid, best_ask):
+        if best_bid is not None:
+            self.current_candle["close_bid"] = best_bid
+        if best_ask is not None:
+            self.current_candle["close_ask"] = best_ask
+
+    def _new_candle(self, candle_time, price, best_bid=None, best_ask=None):
         return {
             "time": candle_time,
             "open": price,
             "high": price,
             "low": price,
-            "close": None
+            "close": None,
+            "open_bid": best_bid,
+            "open_ask": best_ask,
+            "close_bid": best_bid,
+            "close_ask": best_ask,
         }

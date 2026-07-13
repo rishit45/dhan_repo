@@ -1,8 +1,13 @@
+import json
+import os
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from dhanhq import DhanContext, dhanhq
 
 IST = timezone(timedelta(hours=5, minutes=30))
+TOKEN_ENDPOINT = "https://auth.dhan.co/app/generateAccessToken"
 
 
 def _to_ist_datetime(epoch_seconds):
@@ -181,13 +186,53 @@ def fetch_historical_closes(dhan, instrument, periods=20, history_days=30):
     raise RuntimeError(f"Unable to fetch Dhan historical closes: {last_error}")
 
 
+def generate_access_token(dhan_config, auth_config):
+    """Generate a Dhan token from PIN and TOTP environment variables.
+
+    The secrets deliberately stay outside the strategy JSON and are never
+    logged or written back to disk.
+    """
+    client_id = str(dhan_config.get("client_id", "")).strip()
+    pin_env = str(auth_config.get("pin_env", "DHAN_PIN")).strip()
+    totp_env = str(auth_config.get("totp_env", "DHAN_TOTP")).strip()
+    pin = os.environ.get(pin_env, "").strip()
+    totp = os.environ.get(totp_env, "").strip()
+    if not client_id:
+        raise RuntimeError("Dhan client_id is required to generate an access token")
+    if not pin or not totp:
+        raise RuntimeError(
+            f"Set {pin_env} (Dhan PIN) and {totp_env} (current authenticator TOTP) before using dhan_auth.access_token_source=generate"
+        )
+
+    url = f"{TOKEN_ENDPOINT}?{urlencode({'dhanClientId': client_id, 'pin': pin, 'totp': totp})}"
+    request = Request(url, method="POST")
+    try:
+        with urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"Dhan access-token generation failed: {exc}") from exc
+
+    token = payload.get("accessToken") if isinstance(payload, dict) else None
+    if not token:
+        raise RuntimeError("Dhan did not return an access token; verify your PIN and current TOTP")
+    print("[DHAN AUTH] Generated a new access token for this run.")
+    return str(token)
+
+
 def create_dhan(config):
     dhan_config = config.get("dhan", {})
+    auth_config = config.get("dhan_auth", {})
     client_id = str(dhan_config.get("client_id", "")).strip()
-    access_token = str(dhan_config.get("access_token", "")).strip()
+    token_source = str(auth_config.get("access_token_source", "config")).strip().lower()
+    if token_source == "generate":
+        access_token = generate_access_token(dhan_config, auth_config)
+    elif token_source == "config":
+        access_token = str(dhan_config.get("access_token", "")).strip()
+    else:
+        raise ValueError("dhan_auth.access_token_source must be 'config' or 'generate'")
 
     if not client_id or not access_token:
-        print("[DHAN CONFIG] Add client_id and access_token in natural_gas_strategyconfig.json")
+        print("[DHAN CONFIG] Add client_id and access_token, or configure dhan_auth.access_token_source=generate")
 
     return dhanhq(DhanContext(client_id, access_token))
 

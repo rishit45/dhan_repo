@@ -1,7 +1,12 @@
 {
   "dhan": {
     "client_id": "1112472073",
-    "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpc3MiOiJkaGFuIiwicGFydG5lcklkIjoiIiwiZXhwIjoxNzgzNzUwNTY1LCJpYXQiOjE3ODM2NjQxNjUsInRva2VuQ29uc3VtZXJUeXBlIjoiU0VMRiIsIndlYmhvb2tVcmwiOiIiLCJkaGFuQ2xpZW50SWQiOiIxMTEyNDcyMDczIn0.if9IXWLYtGSsXKN_RX_MMH01bPd-8z5grH4lO-wk2efqJgNiLvtPfvIRvsSmtm5JB-OO4E-gUysAf5tPGOh_cw"
+    "access_token": ""
+  },
+  "dhan_auth": {
+    "access_token_source": "config",
+    "pin_env": "DHAN_PIN",
+    "totp_env": "DHAN_TOTP"
   },
   "live_orders": true,
   "poll_interval_secs": 5,
@@ -39,11 +44,15 @@
     "history_csv_5min": "history_5min.csv",
     "history_csv_3min": "history_3min.csv"
   },
+  "backtest": {
+    "trade_start_time": "09:00",
+    "trade_stop_time": "23:30"
+  },
   "moving_average_channel": {
     "source": "ltp_high_low",
     "length": 55
   },
-  "trend_quantity_filter": {
+  "long_short_quantity_checker": {
     "enabled": true,
     "timeframe_minutes": 60,
     "opposite_quantity_mode": "zero",
