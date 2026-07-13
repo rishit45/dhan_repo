@@ -5,6 +5,7 @@
   },
   "dhan_auth": {
     "access_token_source": "config",
+    "client_id_env": "DHAN_CLIENT_ID",
     "pin_env": "DHAN_PIN",
     "totp_env": "DHAN_TOTP"
   },

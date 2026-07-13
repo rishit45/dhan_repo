@@ -1,9 +1,10 @@
 import json
+from pathlib import Path
 
 from debug import print_data
 
 
-CONFIG_PATH = "natural_gas_strategyconfig.json"
+CONFIG_PATH = Path(__file__).resolve().parent / "strategy_config.json"
 
 
 def load_config(path=CONFIG_PATH):
