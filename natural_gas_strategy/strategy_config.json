@@ -46,6 +46,7 @@
   "trend_quantity_filter": {
     "enabled": true,
     "timeframe_minutes": 60,
+    "opposite_quantity_mode": "zero",
     "half_quantity_ratio": 0.5
   },
   "exit": {
@@ -54,6 +55,13 @@
     "stop_loss_points": 200,
     "target_pnl": 2500,
     "stop_loss_pnl": 2500
+  },
+  "daily_target": {
+    "enabled": true,
+    "target_pnl": 0,
+    "include_unrealized": true,
+    "close_position_when_hit": true,
+    "block_new_entries_after_hit": true
   },
   "edis": {
     "enabled": false

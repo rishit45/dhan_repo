@@ -1,3 +1,25 @@
+#vdvdvdv ddttedthdghdghghg dhbhbdhbhdyyfyydbd ddhdh dybhddgd d7yeydhdyd dygdggdyjd ihhjdhd uddhhydgdui uiodidhisskshydi dsgdghdjdshjdsdsidgdygdsudsudgdsudsygduygddgdygudygudugdgyudsgudguidsugdugydsygudsyugdsygudsygudsygudsygdsydsygudsygudsygudsygduydsygdohsdhslhggdg yudgysutre  tg tfftwqweutbm oooudduhdc ud dyudgdbdvcdgdggd dydgys yd dsygdksgydg yy   dudgghjkjhgfdsssssssssssaaaasdfghjkl;;;;;;;;;;;;''''''''''''''''''''''''''''''' dsd kdl fghildfbklidu fghsd ghd tyd fgbghsidu ghuyt gt gt fgt fgygt fgt  fgt tt6 fgt fg fgt fgt fgt fgt fgt tfgyfyfyfyfyfyfygebbbrry ui gj wuie dgdudd sjdfhfdhdy dhndsskd dj bchhhhhhhhhhhhhhhhhhhhhu yihd hdu dhfu h hshjdjgh hjh hjh hjh hjjh hjh hjh hh hjh hjh hjh hjh hjh h h hj hj hjh hjh hjh hjh hjh hjh hjh hjh wqewq3wq qwewqwerwqwewqwerwqwehjhjhjhjhjhjhjhjhjhjhjhjhjhj  ehey hdyy d7ryysry ydteye ryf 
+# fjfufffhfyhdfffuffuvbf
+# import from from 
+# class otttracker:
+#   def __init__(self,dhan,config=none):
+#       delf.dhan =dhan
+#       self.config=config
+#       self.assest=assest
+#       self.history={}
+#       self.result={}
+#       self.last_result =none
+# 
+#       defrefresh (self):
+#           if not self.config.get("enabaled",False):
+#   return{} 
+# self.result ={}
+#  for assests in self .assests :
+#   if not assests .get("enabled,True")
+#    continue
+#      self.results
+#       self.results
+#       self.result  #
 import time
 from datetime import datetime
 

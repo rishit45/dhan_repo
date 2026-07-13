@@ -3,7 +3,7 @@ import json
 from debug import print_data
 
 
-CONFIG_PATH = "strategy_config.json"
+CONFIG_PATH = "natural_gas_strategyconfig.json"
 
 
 def load_config(path=CONFIG_PATH):
@@ -41,7 +41,7 @@ def get_quantity(config, ltp=None):
         final_quantity = (quantity // lot_size) * lot_size
 
     print_data(
-        "STRATEGY_1_QUANTITY",
+        "natural_gas_strategy1_QUANTITY",
         {"mode": mode, "ltp": ltp, "lot_size": lot_size, "quantity": final_quantity},
     )
     return final_quantity

@@ -187,7 +187,7 @@ def create_dhan(config):
     access_token = str(dhan_config.get("access_token", "")).strip()
 
     if not client_id or not access_token:
-        print("[DHAN CONFIG] Add client_id and access_token in strategy_config.json")
+        print("[DHAN CONFIG] Add client_id and access_token in natural_gas_strategyconfig.json")
 
     return dhanhq(DhanContext(client_id, access_token))
 

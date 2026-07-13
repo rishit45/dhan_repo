@@ -89,16 +89,25 @@ def quantity_with_trend_filter(config, instrument, side, ltp, trend_channel, tre
         return base_quantity
 
     ratio = float(trend_config.get("half_quantity_ratio", 0.5))
+    opposite_mode = str(trend_config.get("opposite_quantity_mode", "half")).lower()
     reason = "normal"
     raw_quantity = base_quantity
     if float(ltp) > float(trend_channel["high"]) and side == "SHORT":
-        raw_quantity = int(base_quantity * ratio)
-        reason = "one_hour_ltp_above_mac_high_short_half"
+        if opposite_mode in {"zero", "skip", "none", "0"}:
+            raw_quantity = 0
+            reason = "one_hour_ltp_above_mac_high_short_zero"
+        else:
+            raw_quantity = int(base_quantity * ratio)
+            reason = "one_hour_ltp_above_mac_high_short_half"
     elif float(ltp) < float(trend_channel["low"]) and side == "LONG":
-        raw_quantity = int(base_quantity * ratio)
-        reason = "one_hour_ltp_below_mac_low_long_half"
+        if opposite_mode in {"zero", "skip", "none", "0"}:
+            raw_quantity = 0
+            reason = "one_hour_ltp_below_mac_low_long_zero"
+        else:
+            raw_quantity = int(base_quantity * ratio)
+            reason = "one_hour_ltp_below_mac_low_long_half"
 
-    final_quantity = _round_to_tradable_quantity(raw_quantity, instrument)
+    final_quantity = 0 if raw_quantity <= 0 else _round_to_tradable_quantity(raw_quantity, instrument)
     print_data(
         "TREND_QUANTITY_FILTER",
         {
@@ -210,6 +219,37 @@ def seed_sma_candles(closed_candles):
     return seeded
 
 
+def position_pnl(position, price):
+    if position is None or price is None:
+        return 0.0
+    points = float(price) - float(position["entry_price"])
+    if position["side"] == "SHORT":
+        points = -points
+    return points * int(position["quantity"])
+
+
+def daily_target_limit(daily_target_config):
+    if not daily_target_config.get("enabled", False):
+        return 0.0
+    return float(daily_target_config.get("target_pnl", 0) or 0)
+
+
+def daily_target_status(realized_pnl, position, ltp, daily_target_config):
+    target = daily_target_limit(daily_target_config)
+    unrealized_pnl = 0.0
+    if daily_target_config.get("include_unrealized", True):
+        unrealized_pnl = position_pnl(position, ltp)
+    total_pnl = float(realized_pnl) + unrealized_pnl
+    return {
+        "enabled": bool(daily_target_config.get("enabled", False)),
+        "target_pnl": target,
+        "realized_pnl": float(realized_pnl),
+        "unrealized_pnl": unrealized_pnl,
+        "total_pnl": total_pnl,
+        "hit": target > 0 and total_pnl >= target,
+    }
+
+
 def run():
     config = load_config()
     instrument = get_instrument(config)
@@ -221,10 +261,11 @@ def run():
     exit_config = config.get("exit", {})
     edis_config = config.get("edis", {})
     trend_config = config.get("trend_quantity_filter", {})
+    daily_target_config = config.get("daily_target", {})
     enabled_sides = set(entry_config.get("enabled_sides", ["LONG", "SHORT"]))
     mac_length = int(mac_config.get("length", 20))
 
-    # Short and long candle stores are fully driven by strategy_config.json.
+    # Short and long candle stores are fully driven by natural_gas_strategyconfig.json.
     short_timeframe = int(candle_config.get("short_timeframe_minutes", 3))
     long_timeframe = int(candle_config.get("timeframe_minutes", 5))
     trend_timeframe = int(trend_config.get("timeframe_minutes", 60))
@@ -300,10 +341,13 @@ def run():
     last_trade_summary = None
 
     start_time = datetime.now()
+    current_trade_day = start_time.date()
+    realized_pnl_today = 0.0
+    daily_target_reached = False
     print(f"Strategy 1 started at {start_time.isoformat()}")
     print("Dhan does not provide Moving Average Channel directly; calculating MAC locally.")
-    print_data("STRATEGY_1_CONFIG", config)
-    print_data("STRATEGY_1_INSTRUMENT", instrument)
+    print_data("natural_gas_strategy1_CONFIG", config)
+    print_data("natural_gas_strategy1_INSTRUMENT", instrument)
     startup_quote = fetch_quote(dhan, instrument)
     print_data("STARTUP_QUOTE", startup_quote)
     preflight_live_trading(dhan, config, instrument, startup_quote)
@@ -313,6 +357,40 @@ def run():
         try:
             quote = fetch_quote(dhan, instrument)
             ltp = quote["ltp"]
+            now = datetime.now()
+            if now.date() != current_trade_day:
+                current_trade_day = now.date()
+                realized_pnl_today = 0.0
+                daily_target_reached = False
+                print_data("DAILY_TARGET_RESET", {"trade_day": current_trade_day.isoformat()})
+
+            daily_status = daily_target_status(realized_pnl_today, position, ltp, daily_target_config)
+            if daily_status["hit"] and not daily_target_reached:
+                print_data("DAILY_TARGET_HIT", daily_status)
+                daily_target_reached = True
+
+            if (
+                daily_target_reached
+                and position is not None
+                and daily_target_config.get("close_position_when_hit", True)
+            ):
+                response = place_exit(dhan, instrument, position, quote, live_orders, edis_config)
+                if order_accepted(response, live_orders):
+                    exit_pnl = position_pnl(position, ltp)
+                    realized_pnl_today += exit_pnl
+                    last_trade_summary = (
+                        f"EXIT {position['side']} qty={position['quantity']} price={ltp} "
+                        f"reason=DAILY_TARGET pnl={exit_pnl:.2f}"
+                    )
+                    trade_executed_since_last_long = True
+                    position = None
+                    print_data(
+                        "DAILY_TARGET_STATUS",
+                        daily_target_status(realized_pnl_today, position, ltp, daily_target_config),
+                    )
+                else:
+                    print(f"[EXIT ORDER NOT ACCEPTED] Daily target hit but position kept open. response={response}")
+
             # update both candle stores with the latest ltp
             completed_short = short_candles.update(ltp)
             completed_long = long_candles.update(ltp)
@@ -359,9 +437,14 @@ def run():
                         if exit_reason:
                             response = place_exit(dhan, instrument, position, quote, live_orders, edis_config)
                             if order_accepted(response, live_orders):
-                                last_trade_summary = f"EXIT {position['side']} qty={position['quantity']} price={ltp} reason={exit_reason}"
+                                exit_pnl = position_pnl(position, ltp)
+                                realized_pnl_today += exit_pnl
+                                status = daily_target_status(realized_pnl_today, None, ltp, daily_target_config)
+                                daily_target_reached = daily_target_reached or status["hit"]
+                                last_trade_summary = f"EXIT {position['side']} qty={position['quantity']} price={ltp} reason={exit_reason} pnl={exit_pnl:.2f}"
                                 trade_executed_since_last_long = True
                                 position = None
+                                print_data("DAILY_TARGET_STATUS", status)
                             else:
                                 print(f"[EXIT ORDER NOT ACCEPTED] Keeping position open. response={response}")
 
@@ -400,7 +483,14 @@ def run():
                     )
 
                     if position is None:
-                        if long_raw_signal and long_side_enabled:
+                        if daily_target_reached and daily_target_config.get("block_new_entries_after_hit", True):
+                            if long_raw_signal and long_side_enabled:
+                                print_data(
+                                    "ENTRY_SKIPPED_DAILY_TARGET",
+                                    daily_target_status(realized_pnl_today, position, ltp, daily_target_config),
+                                )
+                            signal = None
+                        elif long_raw_signal and long_side_enabled:
                             signal = "LONG"
                         else:
                             signal = None
@@ -432,6 +522,14 @@ def run():
                                 mac60min,
                                 trend_config,
                             )
+                            if quantity <= 0:
+                                print_data(
+                                    "ENTRY_SKIPPED_ZERO_QUANTITY",
+                                    {"side": signal, "ltp": ltp, "trend_mac": mac60min},
+                                )
+                                signal = None
+
+                        if signal:
                             response = place_entry(
                                 dhan,
                                 instrument,
@@ -469,8 +567,13 @@ def run():
                 response = place_exit(dhan, instrument, position, quote, live_orders, edis_config)
                 if order_accepted(response, live_orders):
                     try:
-                        last_trade_summary = f"EXIT {position['side']} qty={position['quantity']} price={quote['ltp']} reason={exit_reason}"
+                        exit_pnl = position_pnl(position, quote["ltp"])
+                        realized_pnl_today += exit_pnl
+                        status = daily_target_status(realized_pnl_today, None, ltp, daily_target_config)
+                        daily_target_reached = daily_target_reached or status["hit"]
+                        last_trade_summary = f"EXIT {position['side']} qty={position['quantity']} price={quote['ltp']} reason={exit_reason} pnl={exit_pnl:.2f}"
                         trade_executed_since_last_long = True
+                        print_data("DAILY_TARGET_STATUS", status)
                     except Exception:
                         last_trade_summary = f"EXIT position price={quote['ltp']} reason={exit_reason}"
                         trade_executed_since_last_long = True
@@ -503,9 +606,14 @@ def run():
                         if exit_reason:
                             response = place_exit(dhan, instrument, position, quote, live_orders, edis_config)
                             if order_accepted(response, live_orders):
-                                last_trade_summary = f"EXIT {position['side']} qty={position['quantity']} price={ltp} reason={exit_reason}"
+                                exit_pnl = position_pnl(position, ltp)
+                                realized_pnl_today += exit_pnl
+                                status = daily_target_status(realized_pnl_today, None, ltp, daily_target_config)
+                                daily_target_reached = daily_target_reached or status["hit"]
+                                last_trade_summary = f"EXIT {position['side']} qty={position['quantity']} price={ltp} reason={exit_reason} pnl={exit_pnl:.2f}"
                                 trade_executed_since_last_long = True
                                 position = None
+                                print_data("DAILY_TARGET_STATUS", status)
                             else:
                                 print(f"[EXIT ORDER NOT ACCEPTED] Keeping position open. response={response}")
 
@@ -544,7 +652,14 @@ def run():
                     )
 
                     if position is None:
-                        if short_raw_signal and short_side_enabled:
+                        if daily_target_reached and daily_target_config.get("block_new_entries_after_hit", True):
+                            if short_raw_signal and short_side_enabled:
+                                print_data(
+                                    "ENTRY_SKIPPED_DAILY_TARGET",
+                                    daily_target_status(realized_pnl_today, position, ltp, daily_target_config),
+                                )
+                            signal = None
+                        elif short_raw_signal and short_side_enabled:
                             signal = "SHORT"
                         else:
                             signal = None
@@ -576,6 +691,14 @@ def run():
                                 mac60min,
                                 trend_config,
                             )
+                            if quantity <= 0:
+                                print_data(
+                                    "ENTRY_SKIPPED_ZERO_QUANTITY",
+                                    {"side": signal, "ltp": ltp, "trend_mac": mac60min},
+                                )
+                                signal = None
+
+                        if signal:
                             response = place_entry(
                                 dhan,
                                 instrument,

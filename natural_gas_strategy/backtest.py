@@ -8,9 +8,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-STRATEGY_DIR = ROOT / "strategy_"
-if str(STRATEGY_DIR) not in sys.path:
-    sys.path.insert(0, str(STRATEGY_DIR))
+natural_gas_strategyDIR = ROOT / "natural_gas_strategy"
+if str(natural_gas_strategyDIR) not in sys.path:
+    sys.path.insert(0, str(natural_gas_strategyDIR))
 
 from candles import CandleStore
 from config_loader import get_instrument, get_quantity
@@ -60,7 +60,7 @@ class Trade:
 
 
 def load_config():
-    with open(STRATEGY_DIR / "strategy_config.json", "r", encoding="utf-8") as config_file:
+    with open(natural_gas_strategyDIR / "natural_gas_strategyconfig.json", "r", encoding="utf-8") as config_file:
         return json.load(config_file)
 
 
@@ -301,21 +301,30 @@ def trend_quantity_decision(config, instrument, side, ltp, trend_channel, trend_
         }
 
     ratio = float(trend_config.get("half_quantity_ratio", 0.5))
+    opposite_mode = str(trend_config.get("opposite_quantity_mode", "half")).lower()
     raw_quantity = base_quantity
     reason = "normal_between_or_same_direction"
     if float(ltp) > float(trend_channel["high"]) and side == "SHORT":
-        raw_quantity = int(base_quantity * ratio)
-        reason = "one_hour_ltp_above_mac_high_short_half"
+        if opposite_mode in {"zero", "skip", "none", "0"}:
+            raw_quantity = 0
+            reason = "one_hour_ltp_above_mac_high_short_zero"
+        else:
+            raw_quantity = int(base_quantity * ratio)
+            reason = "one_hour_ltp_above_mac_high_short_half"
     elif float(ltp) < float(trend_channel["low"]) and side == "LONG":
-        raw_quantity = int(base_quantity * ratio)
-        reason = "one_hour_ltp_below_mac_low_long_half"
+        if opposite_mode in {"zero", "skip", "none", "0"}:
+            raw_quantity = 0
+            reason = "one_hour_ltp_below_mac_low_long_zero"
+        else:
+            raw_quantity = int(base_quantity * ratio)
+            reason = "one_hour_ltp_below_mac_low_long_half"
     elif float(ltp) > float(trend_channel["high"]) and side == "LONG":
         reason = "one_hour_ltp_above_mac_high_long_normal"
     elif float(ltp) < float(trend_channel["low"]) and side == "SHORT":
         reason = "one_hour_ltp_below_mac_low_short_normal"
 
     return {
-        "quantity": _round_to_tradable_quantity(raw_quantity, instrument),
+        "quantity": 0 if raw_quantity <= 0 else _round_to_tradable_quantity(raw_quantity, instrument),
         "base_quantity": base_quantity,
         "raw_quantity": raw_quantity,
         "trend_quantity_reason": reason,
@@ -357,6 +366,46 @@ def close_position(position, exit_time, exit_price, reason):
     )
 
 
+def position_pnl(position, price):
+    if position is None or price is None:
+        return 0.0
+    points = float(price) - float(position["entry_price"])
+    if position["side"] == "SHORT":
+        points = -points
+    return points * int(position["quantity"])
+
+
+def daily_target_limit(daily_target_config):
+    if not daily_target_config.get("enabled", False):
+        return 0.0
+    return float(daily_target_config.get("target_pnl", 0) or 0)
+
+
+def daily_target_status(realized_pnl, position, ltp, daily_target_config):
+    target = daily_target_limit(daily_target_config)
+    unrealized_pnl = 0.0
+    if daily_target_config.get("include_unrealized", True):
+        unrealized_pnl = position_pnl(position, ltp)
+    total_pnl = float(realized_pnl) + unrealized_pnl
+    return {
+        "enabled": bool(daily_target_config.get("enabled", False)),
+        "target_pnl": target,
+        "realized_pnl": float(realized_pnl),
+        "unrealized_pnl": unrealized_pnl,
+        "total_pnl": total_pnl,
+        "hit": target > 0 and total_pnl >= target,
+    }
+
+
+def record_closed_trade(trades, trade, realized_pnl_by_day, daily_target_config):
+    trades.append(trade)
+    if trade.exit_time is None:
+        return {"hit": False}
+    day = trade.exit_time.date()
+    realized_pnl_by_day[day] = realized_pnl_by_day.get(day, 0.0) + trade.pnl
+    return daily_target_status(realized_pnl_by_day[day], None, trade.exit_price, daily_target_config)
+
+
 def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, short_timeframe, mode, dhan=None):
     long_timeframe = validate_timeframe("Long", long_timeframe)
     short_timeframe = validate_timeframe("Short", short_timeframe)
@@ -371,6 +420,7 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
     enabled_sides = set(config.get("entry", {}).get("enabled_sides", ["LONG", "SHORT"]))
     exit_config = config.get("exit", {})
     trend_config = config.get("trend_quantity_filter", {})
+    daily_target_config = config.get("daily_target", {})
     trend_timeframe = int(trend_config.get("timeframe_minutes", 60))
 
     long_store = CandleStore(timeframe_minutes=long_timeframe, history_len=1000)
@@ -382,6 +432,10 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
     trend_channel = None
     trades = []
     position = None
+    current_trade_day = None
+    realized_pnl_by_day = {}
+    daily_target_reached = False
+    daily_target_skipped_signals = 0
 
     replay_delay = 0.0
     if mode == "replay":
@@ -394,17 +448,46 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
         completed_short = short_store.update(ltp, tick_time=tick_time)
         completed_trend = trend_store.update(ltp, tick_time=tick_time)
 
+        if tick_time >= start_dt and current_trade_day != tick_time.date():
+            current_trade_day = tick_time.date()
+            daily_status = daily_target_status(
+                realized_pnl_by_day.get(current_trade_day, 0.0),
+                None,
+                ltp,
+                daily_target_config,
+            )
+            daily_target_reached = daily_status["hit"]
+            if mode == "replay" and daily_target_limit(daily_target_config) > 0:
+                print(f"[{tick_time}] DAILY TARGET RESET/STATUS {daily_status}")
+
         if completed_trend is not None:
             append_candle(trend_rows, completed_trend)
             trend_channel = mac_channel(trend_rows)
             if mode == "replay" and tick_time >= start_dt:
                 print(f"[{tick_time}] TREND TF CLOSE {completed_trend['close']} MAC={trend_channel}")
 
+        if tick_time >= start_dt and position is not None:
+            daily_status = daily_target_status(
+                realized_pnl_by_day.get(tick_time.date(), 0.0),
+                position,
+                ltp,
+                daily_target_config,
+            )
+            if daily_status["hit"]:
+                daily_target_reached = True
+                if daily_target_config.get("close_position_when_hit", True):
+                    trade = close_position(position, tick_time, ltp, "DAILY_TARGET")
+                    record_closed_trade(trades, trade, realized_pnl_by_day, daily_target_config)
+                    if mode == "replay":
+                        print_trade("EXIT", trade)
+                    position = None
+
         if position is not None:
             exit_reason = should_exit(position, ltp, exit_config)
             if exit_reason and tick_time >= start_dt:
                 trade = close_position(position, tick_time, ltp, exit_reason)
-                trades.append(trade)
+                daily_status = record_closed_trade(trades, trade, realized_pnl_by_day, daily_target_config)
+                daily_target_reached = daily_target_reached or daily_status["hit"]
                 if mode == "replay":
                     print_trade("EXIT", trade)
                 position = None
@@ -420,7 +503,8 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
             if tick_time >= start_dt and channel and position is not None and position["side"] == "LONG":
                 if current < channel["low"]:
                     trade = close_position(position, tick_time, current, "MAC_BREAK_LOWER")
-                    trades.append(trade)
+                    daily_status = record_closed_trade(trades, trade, realized_pnl_by_day, daily_target_config)
+                    daily_target_reached = daily_target_reached or daily_status["hit"]
                     if mode == "replay":
                         print_trade("EXIT", trade)
                     position = None
@@ -432,30 +516,42 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
                 if signal and not entry_price_confirms_signal("LONG", ltp, channel) and entry_price_confirmation_blocks(entry_config):
                     signal = False
                 if signal:
-                    trend_decision = trend_quantity_decision(
-                        config,
-                        instrument,
-                        "LONG",
-                        ltp,
-                        trend_channel,
-                        trend_config,
-                    )
-                    quantity = trend_decision["quantity"]
-                    margin = calculate_entry_margin(dhan, config, instrument, "LONG", quantity, ltp)
-                    position = {
-                        "side": "LONG",
-                        "entry_time": tick_time,
-                        "entry_price": ltp,
-                        "quantity": quantity,
-                        **trend_decision,
-                        **margin,
-                    }
-                    if mode == "replay":
-                        print(
-                            f"[{tick_time}] ENTRY LONG price={ltp} qty={quantity} "
-                            f"trend_reason={trend_decision['trend_quantity_reason']} "
-                            f"margin_qty={margin['margin_quantity']} margin_required={margin['margin_required']}"
+                    if daily_target_reached and daily_target_config.get("block_new_entries_after_hit", True):
+                        daily_target_skipped_signals += 1
+                        if mode == "replay":
+                            print(f"[{tick_time}] SKIP LONG daily target reached")
+                    else:
+                        trend_decision = trend_quantity_decision(
+                            config,
+                            instrument,
+                            "LONG",
+                            ltp,
+                            trend_channel,
+                            trend_config,
                         )
+                        quantity = trend_decision["quantity"]
+                        if quantity <= 0:
+                            if mode == "replay":
+                                print(
+                                    f"[{tick_time}] SKIP LONG zero quantity "
+                                    f"trend_reason={trend_decision['trend_quantity_reason']}"
+                                )
+                        else:
+                            margin = calculate_entry_margin(dhan, config, instrument, "LONG", quantity, ltp)
+                            position = {
+                                "side": "LONG",
+                                "entry_time": tick_time,
+                                "entry_price": ltp,
+                                "quantity": quantity,
+                                **trend_decision,
+                                **margin,
+                            }
+                            if mode == "replay":
+                                print(
+                                    f"[{tick_time}] ENTRY LONG price={ltp} qty={quantity} "
+                                    f"trend_reason={trend_decision['trend_quantity_reason']} "
+                                    f"margin_qty={margin['margin_quantity']} margin_required={margin['margin_required']}"
+                                )
 
         if completed_short is not None:
             previous = last_close(short_rows)
@@ -468,7 +564,8 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
             if tick_time >= start_dt and channel and position is not None and position["side"] == "SHORT":
                 if current > channel["high"]:
                     trade = close_position(position, tick_time, current, "MAC_BREAK_UPPER")
-                    trades.append(trade)
+                    daily_status = record_closed_trade(trades, trade, realized_pnl_by_day, daily_target_config)
+                    daily_target_reached = daily_target_reached or daily_status["hit"]
                     if mode == "replay":
                         print_trade("EXIT", trade)
                     position = None
@@ -480,30 +577,42 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
                 if signal and not entry_price_confirms_signal("SHORT", ltp, channel) and entry_price_confirmation_blocks(entry_config):
                     signal = False
                 if signal:
-                    trend_decision = trend_quantity_decision(
-                        config,
-                        instrument,
-                        "SHORT",
-                        ltp,
-                        trend_channel,
-                        trend_config,
-                    )
-                    quantity = trend_decision["quantity"]
-                    margin = calculate_entry_margin(dhan, config, instrument, "SHORT", quantity, ltp)
-                    position = {
-                        "side": "SHORT",
-                        "entry_time": tick_time,
-                        "entry_price": ltp,
-                        "quantity": quantity,
-                        **trend_decision,
-                        **margin,
-                    }
-                    if mode == "replay":
-                        print(
-                            f"[{tick_time}] ENTRY SHORT price={ltp} qty={quantity} "
-                            f"trend_reason={trend_decision['trend_quantity_reason']} "
-                            f"margin_qty={margin['margin_quantity']} margin_required={margin['margin_required']}"
+                    if daily_target_reached and daily_target_config.get("block_new_entries_after_hit", True):
+                        daily_target_skipped_signals += 1
+                        if mode == "replay":
+                            print(f"[{tick_time}] SKIP SHORT daily target reached")
+                    else:
+                        trend_decision = trend_quantity_decision(
+                            config,
+                            instrument,
+                            "SHORT",
+                            ltp,
+                            trend_channel,
+                            trend_config,
                         )
+                        quantity = trend_decision["quantity"]
+                        if quantity <= 0:
+                            if mode == "replay":
+                                print(
+                                    f"[{tick_time}] SKIP SHORT zero quantity "
+                                    f"trend_reason={trend_decision['trend_quantity_reason']}"
+                                )
+                        else:
+                            margin = calculate_entry_margin(dhan, config, instrument, "SHORT", quantity, ltp)
+                            position = {
+                                "side": "SHORT",
+                                "entry_time": tick_time,
+                                "entry_price": ltp,
+                                "quantity": quantity,
+                                **trend_decision,
+                                **margin,
+                            }
+                            if mode == "replay":
+                                print(
+                                    f"[{tick_time}] ENTRY SHORT price={ltp} qty={quantity} "
+                                    f"trend_reason={trend_decision['trend_quantity_reason']} "
+                                    f"margin_qty={margin['margin_quantity']} margin_required={margin['margin_required']}"
+                                )
 
         if mode == "replay" and tick_time >= start_dt:
             time.sleep(replay_delay)
@@ -511,7 +620,7 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
     if position is not None:
         final_price = float(one_min_candles[-1]["close"])
         trade = close_position(position, end_dt, final_price, "END_OF_BACKTEST")
-        trades.append(trade)
+        record_closed_trade(trades, trade, realized_pnl_by_day, daily_target_config)
         if mode == "replay":
             print_trade("EXIT", trade)
 
@@ -522,6 +631,9 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
         "long_timeframe": long_timeframe,
         "short_timeframe": short_timeframe,
         "trend_timeframe": trend_timeframe,
+        "daily_target": daily_target_config,
+        "daily_target_skipped_signals": daily_target_skipped_signals,
+        "realized_pnl_by_day": realized_pnl_by_day,
         "trades": trades,
     }
 
@@ -546,12 +658,22 @@ def print_summary(result):
     print(f"Long timeframe: {result['long_timeframe']} min")
     print(f"Short timeframe: {result['short_timeframe']} min")
     print(f"Trend quantity timeframe: {result['trend_timeframe']} min")
+    daily_target = result.get("daily_target", {})
+    daily_target_value = daily_target_limit(daily_target)
+    if daily_target.get("enabled", False) and daily_target_value > 0:
+        print(f"Daily target PnL: {daily_target_value:.2f}")
+        print(f"Signals skipped after daily target: {result.get('daily_target_skipped_signals', 0)}")
     print(f"Trades: {len(trades)}")
     print(f"Winners: {len(winners)}")
     print(f"Losers: {len(losers)}")
     print(f"Total PnL: {total_pnl:.2f}")
     if margins:
         print(f"Max Dhan margin required: {max(margins):.2f}")
+    realized_pnl_by_day = result.get("realized_pnl_by_day", {})
+    if realized_pnl_by_day:
+        print("\nDaily realized PnL:")
+        for day in sorted(realized_pnl_by_day):
+            print(f"{day}: {realized_pnl_by_day[day]:.2f}")
     if trades:
         print("\nTrades:")
         for idx, trade in enumerate(trades, 1):
