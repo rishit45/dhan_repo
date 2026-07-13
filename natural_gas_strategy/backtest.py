@@ -487,19 +487,33 @@ def daily_target_limit(daily_target_config):
     return float(daily_target_config.get("target_pnl", 0) or 0)
 
 
+def daily_stop_loss_limit(daily_target_config):
+    """Return the positive daily loss amount that stops the backtest."""
+    if not daily_target_config.get("enabled", False):
+        return 0.0
+    return abs(float(daily_target_config.get("stop_loss_pnl", 0) or 0))
+
+
 def daily_target_status(realized_pnl, position, ltp, daily_target_config):
     target = daily_target_limit(daily_target_config)
+    stop_loss = daily_stop_loss_limit(daily_target_config)
     unrealized_pnl = 0.0
     if daily_target_config.get("include_unrealized", True):
         unrealized_pnl = position_pnl(position, ltp)
     total_pnl = float(realized_pnl) + unrealized_pnl
+    target_hit = target > 0 and total_pnl >= target
+    stop_loss_hit = stop_loss > 0 and total_pnl <= -stop_loss
     return {
         "enabled": bool(daily_target_config.get("enabled", False)),
         "target_pnl": target,
+        "stop_loss_pnl": stop_loss,
         "realized_pnl": float(realized_pnl),
         "unrealized_pnl": unrealized_pnl,
         "total_pnl": total_pnl,
-        "hit": target > 0 and total_pnl >= target,
+        "target_hit": target_hit,
+        "stop_loss_hit": stop_loss_hit,
+        "hit": target_hit or stop_loss_hit,
+        "reason": "DAILY_TARGET" if target_hit else "DAILY_STOP_LOSS" if stop_loss_hit else None,
     }
 
 
@@ -614,8 +628,11 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
                 daily_target_config,
             )
             daily_target_reached = daily_status["hit"]
-            if mode == "replay" and daily_target_limit(daily_target_config) > 0:
-                print(f"[{tick_time}] DAILY TARGET RESET/STATUS {daily_status}")
+            if mode == "replay" and (
+                daily_target_limit(daily_target_config) > 0
+                or daily_stop_loss_limit(daily_target_config) > 0
+            ):
+                print(f"[{tick_time}] DAILY P&L LIMIT RESET/STATUS {daily_status}")
 
         in_trade_window = is_in_backtest_trade_window(tick_time, trade_start_time, trade_stop_time)
         if tick_time >= start_dt and position is not None and not in_trade_window:
@@ -641,7 +658,7 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
             if daily_status["hit"]:
                 daily_target_reached = True
                 if daily_target_config.get("close_position_when_hit", True):
-                    trade = close_position(position, tick_time, ltp, "DAILY_TARGET")
+                    trade = close_position(position, tick_time, ltp, daily_status["reason"])
                     record_closed_trade(trades, trade, realized_pnl_by_day, daily_target_config)
                     if mode == "replay":
                         print_trade("EXIT", trade)
@@ -794,8 +811,12 @@ def print_summary(result):
         print(f"Daily trade window: {result['trade_start_time']} to {result['trade_stop_time']} (stop exclusive)")
     daily_target = result.get("daily_target", {})
     daily_target_value = daily_target_limit(daily_target)
-    if daily_target.get("enabled", False) and daily_target_value > 0:
-        print(f"Daily target PnL: {daily_target_value:.2f}")
+    daily_stop_loss_value = daily_stop_loss_limit(daily_target)
+    if daily_target.get("enabled", False) and (daily_target_value > 0 or daily_stop_loss_value > 0):
+        if daily_target_value > 0:
+            print(f"Daily target PnL: {daily_target_value:.2f}")
+        if daily_stop_loss_value > 0:
+            print(f"Daily stop-loss PnL: {daily_stop_loss_value:.2f}")
         print(f"Signals skipped after daily target: {result.get('daily_target_skipped_signals', 0)}")
     print(f"Trades: {len(trades)}")
     print(f"Winners: {len(winners)}")

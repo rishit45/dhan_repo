@@ -1,34 +1,9 @@
-import json
-import os
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
-from pathlib import Path
 
 from dhanhq import DhanContext, dhanhq
+from generate_access_token import generate_access_token
 
 IST = timezone(timedelta(hours=5, minutes=30))
-TOKEN_ENDPOINT = "https://auth.dhan.co/app/generateAccessToken"
-
-
-def load_dotenv(path=None):
-    """Load simple KEY=value values from the strategy's .env file.
-
-    Existing system environment variables win, so deployment secrets can be
-    supplied by the operating system instead of a local .env file.
-    """
-    path = Path(path) if path else Path(__file__).resolve().parent / ".env"
-    if not path.is_file():
-        return
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key:
-            os.environ.setdefault(key, value)
 
 
 def _to_ist_datetime(epoch_seconds):
@@ -210,52 +185,14 @@ def fetch_historical_closes(dhan, instrument, periods=20, history_days=30):
     raise RuntimeError(f"Unable to fetch Dhan historical closes: {last_error}")
 
 
-def generate_access_token(dhan_config, auth_config):
-    """Generate a Dhan token from PIN and TOTP environment variables.
-
-    The secrets deliberately stay outside the strategy JSON and are never
-    logged or written back to disk.
-    """
-    client_id_env = str(auth_config.get("client_id_env", "DHAN_CLIENT_ID")).strip()
-    client_id = os.environ.get(client_id_env, "").strip()
-    pin_env = str(auth_config.get("pin_env", "DHAN_PIN")).strip()
-    totp_env = str(auth_config.get("totp_env", "DHAN_TOTP")).strip()
-    pin = os.environ.get(pin_env, "").strip()
-    totp = os.environ.get(totp_env, "").strip()
-    if not client_id:
-        raise RuntimeError(
-            f"Set {client_id_env} (Dhan client ID) before using dhan_auth.access_token_source=generate"
-        )
-    if not pin or not totp:
-        raise RuntimeError(
-            f"Set {pin_env} (Dhan PIN) and {totp_env} (current authenticator TOTP) before using dhan_auth.access_token_source=generate"
-        )
-
-    url = f"{TOKEN_ENDPOINT}?{urlencode({'dhanClientId': client_id, 'pin': pin, 'totp': totp})}"
-    request = Request(url, method="POST")
-    try:
-        with urlopen(request, timeout=15) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except Exception as exc:
-        raise RuntimeError(f"Dhan access-token generation failed: {exc}") from exc
-
-    token = payload.get("accessToken") if isinstance(payload, dict) else None
-    if not token:
-        raise RuntimeError("Dhan did not return an access token; verify your PIN and current TOTP")
-    print("[DHAN AUTH] Generated a new access token for this run.")
-    return str(token)
-
-
 def create_dhan(config):
     dhan_config = config.get("dhan", {})
     auth_config = config.get("dhan_auth", {})
     client_id = str(dhan_config.get("client_id", "")).strip()
     token_source = str(auth_config.get("access_token_source", "config")).strip().lower()
     if token_source == "generate":
-        load_dotenv()
-        client_id_env = str(auth_config.get("client_id_env", "DHAN_CLIENT_ID")).strip()
-        client_id = os.environ.get(client_id_env, "").strip()
-        access_token = generate_access_token(dhan_config, auth_config)
+        client_id, access_token = generate_access_token()
+        print("[DHAN AUTH] Generated a new access token for this run.")
     elif token_source == "config":
         access_token = str(dhan_config.get("access_token", "")).strip()
     else:

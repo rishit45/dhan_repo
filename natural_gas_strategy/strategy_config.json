@@ -1,13 +1,10 @@
 {
   "dhan": {
-    "client_id": "1112472073",
-    "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpc3MiOiJkaGFuIiwicGFydG5lcklkIjoiIiwiZXhwIjoxNzg0MDA5MDM1LCJpYXQiOjE3ODM5MjI2MzUsInRva2VuQ29uc3VtZXJUeXBlIjoiU0VMRiIsIndlYmhvb2tVcmwiOiIiLCJkaGFuQ2xpZW50SWQiOiIxMTEyNDcyMDczIn0.iJzXn_UZ5LVz4yOWH9tC0yjafdo_hDgnZR3-sWTCEcMR6UEtgV7ZBWOvH9PcXU3FW8dTrq43QQwl1m2lW5h0DQ"
+    "client_id": "",
+    "access_token": ""
   },
   "dhan_auth": {
-    "access_token_source": "config",
-    "client_id_env": "DHAN_CLIENT_ID",
-    "pin_env": "DHAN_PIN",
-    "totp_env": "DHAN_TOTP"
+    "access_token_source": "generate"
   },
   "live_orders": true,
   "poll_interval_secs": 5,
@@ -33,14 +30,14 @@
     "short_limit_price_source": "best_bid"
   },
   "live_safety": {
-    "require_startup_confirmation": true,
+    "require_startup_confirmation": false,
     "confirmation_text": "LIVE",
     "check_margin": true,
     "margin_quantity_mode": "auto"
   },
   "candles": {
     "timeframe_minutes": 5,
-    "short_timeframe_minutes": 3,
+    "short_timeframe_minutes": 5,
     "history_len": 200,
     "history_csv_5min": "history_5min.csv",
     "history_csv_3min": "history_3min.csv"
@@ -71,6 +68,7 @@
   "daily_target": {
     "enabled": true,
     "target_pnl": 0,
+    "stop_loss_pnl": 0,
     "include_unrealized": true,
     "close_position_when_hit": true,
     "block_new_entries_after_hit": true

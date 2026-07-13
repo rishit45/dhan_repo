@@ -91,7 +91,7 @@ def quantity_with_trend_filter(config, instrument, side, ltp, trend_channel, tre
 
     ratio = float(trend_config.get("half_quantity_ratio", 0.5))
     opposite_mode = str(trend_config.get("opposite_quantity_mode", "half")).lower()
-    reason = "normal"
+    reason = "normal_between_or_same_direction"
     raw_quantity = base_quantity
     if float(ltp) > float(trend_channel["high"]) and side == "SHORT":
         if opposite_mode in {"zero", "skip", "none", "0"}:
@@ -107,6 +107,13 @@ def quantity_with_trend_filter(config, instrument, side, ltp, trend_channel, tre
         else:
             raw_quantity = int(base_quantity * ratio)
             reason = "one_hour_ltp_below_mac_low_long_half"
+    elif float(ltp) > float(trend_channel["high"]) and side == "LONG":
+        reason = "one_hour_ltp_above_mac_high_long_normal"
+    elif float(ltp) < float(trend_channel["low"]) and side == "SHORT":
+        reason = "one_hour_ltp_below_mac_low_short_normal"
+    elif float(trend_channel["low"]) < float(ltp) < float(trend_channel["high"]):
+        raw_quantity = 0
+        reason = "one_hour_ltp_between_mac_zero"
 
     final_quantity = 0 if raw_quantity <= 0 else _round_to_tradable_quantity(raw_quantity, instrument)
     print_data(
@@ -235,19 +242,33 @@ def daily_target_limit(daily_target_config):
     return float(daily_target_config.get("target_pnl", 0) or 0)
 
 
+def daily_stop_loss_limit(daily_target_config):
+    """Return the positive daily loss amount that stops the strategy."""
+    if not daily_target_config.get("enabled", False):
+        return 0.0
+    return abs(float(daily_target_config.get("stop_loss_pnl", 0) or 0))
+
+
 def daily_target_status(realized_pnl, position, ltp, daily_target_config):
     target = daily_target_limit(daily_target_config)
+    stop_loss = daily_stop_loss_limit(daily_target_config)
     unrealized_pnl = 0.0
     if daily_target_config.get("include_unrealized", True):
         unrealized_pnl = position_pnl(position, ltp)
     total_pnl = float(realized_pnl) + unrealized_pnl
+    target_hit = target > 0 and total_pnl >= target
+    stop_loss_hit = stop_loss > 0 and total_pnl <= -stop_loss
     return {
         "enabled": bool(daily_target_config.get("enabled", False)),
         "target_pnl": target,
+        "stop_loss_pnl": stop_loss,
         "realized_pnl": float(realized_pnl),
         "unrealized_pnl": unrealized_pnl,
         "total_pnl": total_pnl,
-        "hit": target > 0 and total_pnl >= target,
+        "target_hit": target_hit,
+        "stop_loss_hit": stop_loss_hit,
+        "hit": target_hit or stop_loss_hit,
+        "reason": "DAILY_TARGET" if target_hit else "DAILY_STOP_LOSS" if stop_loss_hit else None,
     }
 
 
@@ -363,11 +384,11 @@ def run():
                 current_trade_day = now.date()
                 realized_pnl_today = 0.0
                 daily_target_reached = False
-                print_data("DAILY_TARGET_RESET", {"trade_day": current_trade_day.isoformat()})
+                print_data("DAILY_PNL_LIMIT_RESET", {"trade_day": current_trade_day.isoformat()})
 
             daily_status = daily_target_status(realized_pnl_today, position, ltp, daily_target_config)
             if daily_status["hit"] and not daily_target_reached:
-                print_data("DAILY_TARGET_HIT", daily_status)
+                print_data("DAILY_PNL_LIMIT_HIT", daily_status)
                 daily_target_reached = True
 
             if (
@@ -381,16 +402,16 @@ def run():
                     realized_pnl_today += exit_pnl
                     last_trade_summary = (
                         f"EXIT {position['side']} qty={position['quantity']} price={ltp} "
-                        f"reason=DAILY_TARGET pnl={exit_pnl:.2f}"
+                        f"reason={daily_status['reason']} pnl={exit_pnl:.2f}"
                     )
                     trade_executed_since_last_long = True
                     position = None
                     print_data(
-                        "DAILY_TARGET_STATUS",
+                        "DAILY_PNL_LIMIT_STATUS",
                         daily_target_status(realized_pnl_today, position, ltp, daily_target_config),
                     )
                 else:
-                    print(f"[EXIT ORDER NOT ACCEPTED] Daily target hit but position kept open. response={response}")
+                    print(f"[EXIT ORDER NOT ACCEPTED] Daily P&L limit hit but position kept open. response={response}")
 
             # update both candle stores with the latest ltp
             completed_short = short_candles.update(
