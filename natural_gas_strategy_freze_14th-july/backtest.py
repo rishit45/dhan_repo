@@ -7,10 +7,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
-natural_gas_strategyDIR = ROOT / "natural_gas_strategy"
-if str(natural_gas_strategyDIR) not in sys.path:
-    sys.path.insert(0, str(natural_gas_strategyDIR))
+STRATEGY_DIR = Path(__file__).resolve().parent
+if str(STRATEGY_DIR) not in sys.path:
+    sys.path.insert(0, str(STRATEGY_DIR))
 
 from config_loader import get_instrument, get_quantity
 from exit_manager import should_exit
@@ -59,7 +58,7 @@ class Trade:
 
 
 def load_config():
-    with open(natural_gas_strategyDIR / "strategy_config.json", "r", encoding="utf-8") as config_file:
+    with open(STRATEGY_DIR / "strategy_config.json", "r", encoding="utf-8") as config_file:
         return json.load(config_file)
 
 

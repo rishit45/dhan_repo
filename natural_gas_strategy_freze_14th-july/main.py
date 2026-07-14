@@ -1,5 +1,6 @@
 import time
 from datetime import datetime
+from pathlib import Path
 
 from buy import place_buy_order
 from candle_diagnostics import build_candle_diagnostic
@@ -19,6 +20,7 @@ from market_data import create_dhan, fetch_quote, fetch_historical_intraday_cand
 from sell import place_sell_order
 
 
+STRATEGY_DIR = Path(__file__).resolve().parent
 
 
 
@@ -291,7 +293,7 @@ def daily_target_status(realized_pnl, position, ltp, daily_target_config):
 
 
 def run():
-    config = load_config()
+    config = load_config(STRATEGY_DIR / "strategy_config.json")
     instrument = get_instrument(config)
     dhan = create_dhan(config)
     live_orders = live_orders_enabled(config)
