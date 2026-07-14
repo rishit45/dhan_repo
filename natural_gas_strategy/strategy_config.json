@@ -1,10 +1,10 @@
 {
   "dhan": {
-    "client_id": "",
-    "access_token": ""
+    "client_id": "1112472073",
+    "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpc3MiOiJkaGFuIiwicGFydG5lcklkIjoiIiwiZXhwIjoxNzg0MDA5MDM1LCJpYXQiOjE3ODM5MjI2MzUsInRva2VuQ29uc3VtZXJUeXBlIjoiU0VMRiIsIndlYmhvb2tVcmwiOiIiLCJkaGFuQ2xpZW50SWQiOiIxMTEyNDcyMDczIn0.iJzXn_UZ5LVz4yOWH9tC0yjafdo_hDgnZR3-sWTCEcMR6UEtgV7ZBWOvH9PcXU3FW8dTrq43QQwl1m2lW5h0DQ"
   },
   "dhan_auth": {
-    "access_token_source": "generate"
+    "access_token_source": "config"
   },
   "live_orders": true,
   "poll_interval_secs": 5,
@@ -68,7 +68,7 @@
   "daily_target": {
     "enabled": true,
     "target_pnl": 0,
-    "stop_loss_pnl": 0,
+    "stop_loss_pnl": 3000,
     "include_unrealized": true,
     "close_position_when_hit": true,
     "block_new_entries_after_hit": true

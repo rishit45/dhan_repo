@@ -37,6 +37,18 @@ def entry_check_price(side, entry_config, quote):
     return limit_price_for_entry(side, entry_config, quote)
 
 
+def live_candle_price(side, quote):
+    """Use the executable quote side for a directional live candle.
+
+    A long signal is built from best ask (the buy price), so its candle low is
+    the minimum buy price seen in that interval.  A short signal is built from
+    best bid (the sell price), so its candle high is the maximum sell price
+    seen in that interval.  LTP is used only if quote depth is unavailable.
+    """
+    source = "best_ask" if side == "LONG" else "best_bid"
+    return float(quote.get(source) or quote["ltp"])
+
+
 def entry_price_confirms_signal(side, price, channel):
     if price is None or channel is None:
         return False
@@ -413,12 +425,19 @@ def run():
                 else:
                     print(f"[EXIT ORDER NOT ACCEPTED] Daily P&L limit hit but position kept open. response={response}")
 
-            # update both candle stores with the latest ltp
+            # Directional trading candles use executable quote sides, not LTP:
+            # LONG = buy/ask stream; SHORT = sell/bid stream.
             completed_short = short_candles.update(
-                ltp, tick_time=now, best_bid=quote.get("best_bid"), best_ask=quote.get("best_ask")
+                live_candle_price("SHORT", quote),
+                tick_time=now,
+                best_bid=quote.get("best_bid"),
+                best_ask=quote.get("best_ask"),
             )
             completed_long = long_candles.update(
-                ltp, tick_time=now, best_bid=quote.get("best_bid"), best_ask=quote.get("best_ask")
+                live_candle_price("LONG", quote),
+                tick_time=now,
+                best_bid=quote.get("best_bid"),
+                best_ask=quote.get("best_ask"),
             )
             completed_trend = trend_candles.update(
                 ltp, tick_time=now, best_bid=quote.get("best_bid"), best_ask=quote.get("best_ask")
