@@ -160,10 +160,16 @@ def place_entry(dhan, instrument, side, quantity, entry_config, quote, live_orde
     return place_sell_order(dhan, instrument, quantity, order_type, price, live_orders, edis_config)
 
 
+def exit_price_for_position(position, quote):
+    """Return the executable top-of-book price for closing a position."""
+    source = "best_bid" if position["side"] == "LONG" else "best_ask"
+    return float(quote.get(source) or quote["ltp"])
+
+
 def place_exit(dhan, instrument, position, quote, live_orders, edis_config=None):
     side = position["side"]
     quantity = position["quantity"]
-    price = quote["ltp"]
+    price = exit_price_for_position(position, quote)
     transaction_type = "SELL" if side == "LONG" else "BUY"
 
     validate_order_config(instrument, quantity, "LIMIT", price)
@@ -398,7 +404,10 @@ def run():
                 daily_target_reached = False
                 print_data("DAILY_PNL_LIMIT_RESET", {"trade_day": current_trade_day.isoformat()})
 
-            daily_status = daily_target_status(realized_pnl_today, position, ltp, daily_target_config)
+            daily_mark_price = exit_price_for_position(position, quote) if position else ltp
+            daily_status = daily_target_status(
+                realized_pnl_today, position, daily_mark_price, daily_target_config
+            )
             if daily_status["hit"] and not daily_target_reached:
                 print_data("DAILY_PNL_LIMIT_HIT", daily_status)
                 daily_target_reached = True
@@ -408,19 +417,20 @@ def run():
                 and position is not None
                 and daily_target_config.get("close_position_when_hit", True)
             ):
+                exit_price = exit_price_for_position(position, quote)
                 response = place_exit(dhan, instrument, position, quote, live_orders, edis_config)
                 if order_accepted(response, live_orders):
-                    exit_pnl = position_pnl(position, ltp)
+                    exit_pnl = position_pnl(position, exit_price)
                     realized_pnl_today += exit_pnl
                     last_trade_summary = (
-                        f"EXIT {position['side']} qty={position['quantity']} price={ltp} "
+                        f"EXIT {position['side']} qty={position['quantity']} price={exit_price} "
                         f"reason={daily_status['reason']} pnl={exit_pnl:.2f}"
                     )
                     trade_executed_since_last_long = True
                     position = None
                     print_data(
                         "DAILY_PNL_LIMIT_STATUS",
-                        daily_target_status(realized_pnl_today, position, ltp, daily_target_config),
+                        daily_target_status(realized_pnl_today, position, exit_price, daily_target_config),
                     )
                 else:
                     print(f"[EXIT ORDER NOT ACCEPTED] Daily P&L limit hit but position kept open. response={response}")
@@ -487,16 +497,19 @@ def run():
                         if long_close < long_channel["low"]:
                             exit_reason = "MAC_BREAK_LOWER"
                         else:
-                            exit_reason = should_exit(position, ltp, exit_config)
+                            exit_reason = should_exit(
+                                position, exit_price_for_position(position, quote), exit_config
+                            )
 
                         if exit_reason:
+                            exit_price = exit_price_for_position(position, quote)
                             response = place_exit(dhan, instrument, position, quote, live_orders, edis_config)
                             if order_accepted(response, live_orders):
-                                exit_pnl = position_pnl(position, ltp)
+                                exit_pnl = position_pnl(position, exit_price)
                                 realized_pnl_today += exit_pnl
-                                status = daily_target_status(realized_pnl_today, None, ltp, daily_target_config)
+                                status = daily_target_status(realized_pnl_today, None, exit_price, daily_target_config)
                                 daily_target_reached = daily_target_reached or status["hit"]
-                                last_trade_summary = f"EXIT {position['side']} qty={position['quantity']} price={ltp} reason={exit_reason} pnl={exit_pnl:.2f}"
+                                last_trade_summary = f"EXIT {position['side']} qty={position['quantity']} price={exit_price} reason={exit_reason} pnl={exit_pnl:.2f}"
                                 trade_executed_since_last_long = True
                                 position = None
                                 print_data("DAILY_TARGET_STATUS", status)
@@ -616,17 +629,18 @@ def run():
                     trade_executed_since_last_long = False
                     last_trade_summary = None
 
-            exit_reason = should_exit(position, ltp, exit_config)
+            exit_reason = should_exit(position, exit_price_for_position(position, quote), exit_config)
             if exit_reason:
                 print(f"[EXIT] {exit_reason} position={position}")
+                exit_price = exit_price_for_position(position, quote)
                 response = place_exit(dhan, instrument, position, quote, live_orders, edis_config)
                 if order_accepted(response, live_orders):
                     try:
-                        exit_pnl = position_pnl(position, quote["ltp"])
+                        exit_pnl = position_pnl(position, exit_price)
                         realized_pnl_today += exit_pnl
-                        status = daily_target_status(realized_pnl_today, None, ltp, daily_target_config)
+                        status = daily_target_status(realized_pnl_today, None, exit_price, daily_target_config)
                         daily_target_reached = daily_target_reached or status["hit"]
-                        last_trade_summary = f"EXIT {position['side']} qty={position['quantity']} price={quote['ltp']} reason={exit_reason} pnl={exit_pnl:.2f}"
+                        last_trade_summary = f"EXIT {position['side']} qty={position['quantity']} price={exit_price} reason={exit_reason} pnl={exit_pnl:.2f}"
                         trade_executed_since_last_long = True
                         print_data("DAILY_TARGET_STATUS", status)
                     except Exception:
@@ -660,16 +674,19 @@ def run():
                         if short_close > mac3min["high"]:
                             exit_reason = "MAC_BREAK_UPPER"
                         else:
-                            exit_reason = should_exit(position, ltp, exit_config)
+                            exit_reason = should_exit(
+                                position, exit_price_for_position(position, quote), exit_config
+                            )
 
                         if exit_reason:
+                            exit_price = exit_price_for_position(position, quote)
                             response = place_exit(dhan, instrument, position, quote, live_orders, edis_config)
                             if order_accepted(response, live_orders):
-                                exit_pnl = position_pnl(position, ltp)
+                                exit_pnl = position_pnl(position, exit_price)
                                 realized_pnl_today += exit_pnl
-                                status = daily_target_status(realized_pnl_today, None, ltp, daily_target_config)
+                                status = daily_target_status(realized_pnl_today, None, exit_price, daily_target_config)
                                 daily_target_reached = daily_target_reached or status["hit"]
-                                last_trade_summary = f"EXIT {position['side']} qty={position['quantity']} price={ltp} reason={exit_reason} pnl={exit_pnl:.2f}"
+                                last_trade_summary = f"EXIT {position['side']} qty={position['quantity']} price={exit_price} reason={exit_reason} pnl={exit_pnl:.2f}"
                                 trade_executed_since_last_long = True
                                 position = None
                                 print_data("DAILY_TARGET_STATUS", status)
