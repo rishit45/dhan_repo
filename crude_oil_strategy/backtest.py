@@ -13,7 +13,7 @@ if str(STRATEGY_DIR) not in sys.path:
 
 from candles import CandleStore
 from config_loader import get_instrument, get_quantity
-from exit_manager import should_exit
+from exit_manager import daily_pnl_status, should_exit
 import indicators
 from market_data import (
     _history_instrument_type_candidates,
@@ -64,8 +64,8 @@ def parse_datetime(prompt):
             try:
                 parsed = datetime.strptime(value, fmt)
                 if fmt == "%Y-%m-%d":
-                    return parsed.replace(hour=0, minute=0, second=0)
-                return parsed
+                    return parsed.replace(hour=0, minute=0, second=0), True
+                return parsed, False
             except ValueError:
                 continue
         print("Use format YYYY-MM-DD HH:MM, for example 2026-07-01 09:00")
@@ -337,6 +337,41 @@ def candle_stop_exit(position, close_price):
     return None
 
 
+def parse_trade_time(value, name):
+    if value in (None, ""):
+        return None
+    try:
+        return datetime.strptime(str(value), "%H:%M").time()
+    except ValueError as exc:
+        raise ValueError(f"backtest.{name} must use HH:MM, for example 09:00") from exc
+
+
+def in_trade_window(moment, start_time, stop_time):
+    """Return whether a timestamp is inside a normal or overnight trade window."""
+    if start_time is None or stop_time is None:
+        return True
+    current_time = moment.time()
+    if start_time <= stop_time:
+        return start_time <= current_time < stop_time
+    return current_time >= start_time or current_time < stop_time
+
+
+def build_daily_stats(trades):
+    daily = {}
+    for trade in trades:
+        trade_day = trade.exit_time.date().isoformat()
+        stats = daily.setdefault(trade_day, {"pnl": 0.0, "trades": 0, "winners": 0, "losers": 0, "breakeven": 0})
+        stats["pnl"] += trade.pnl
+        stats["trades"] += 1
+        if trade.pnl > 0:
+            stats["winners"] += 1
+        elif trade.pnl < 0:
+            stats["losers"] += 1
+        else:
+            stats["breakeven"] += 1
+    return daily
+
+
 def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, short_timeframe, mode, dhan=None):
     long_timeframe = validate_timeframe("Long", long_timeframe)
     short_timeframe = validate_timeframe("Short", short_timeframe)
@@ -350,6 +385,10 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
     entry_config = config.get("entry", {})
     enabled_sides = set(entry_config.get("enabled_sides", ["LONG", "SHORT"]))
     exit_config = config.get("exit", {})
+    daily_pnl_config = config.get("daily_pnl", {})
+    backtest_config = config.get("backtest", {})
+    trade_start_time = parse_trade_time(backtest_config.get("trade_start_time"), "trade_start_time")
+    trade_stop_time = parse_trade_time(backtest_config.get("trade_stop_time"), "trade_stop_time")
     candle_stop_points = float(exit_config.get("candle_stop_points", 3))
 
     long_store = CandleStore(timeframe_minutes=long_timeframe, history_len=1000)
@@ -358,6 +397,20 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
     short_rows = []
     trades = []
     position = None
+    realized_pnl_by_day = {}
+    blocked_days = set()
+
+    def close_and_record(open_position, exit_time, exit_price, reason):
+        trade = close_position(open_position, exit_time, exit_price, reason)
+        trades.append(trade)
+        day_key = exit_time.date().isoformat()
+        realized_pnl_by_day[day_key] = realized_pnl_by_day.get(day_key, 0.0) + trade.pnl
+        status = daily_pnl_status(realized_pnl_by_day[day_key], None, None, daily_pnl_config)
+        if status["hit"]:
+            blocked_days.add(day_key)
+        if mode == "replay":
+            print_trade("EXIT", trade)
+        return trade
 
     replay_delay = 0.0
     if mode == "replay":
@@ -366,15 +419,24 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
     for tick in one_min_candles:
         tick_time = tick["time"]
         ltp = float(tick["close"])
+        day_key = tick_time.date().isoformat()
+        trade_window_open = in_trade_window(tick_time, trade_start_time, trade_stop_time)
 
         if tick_time >= start_dt and position is not None:
-            point_exit_reason = should_exit(position, ltp, exit_config)
-            if point_exit_reason:
-                trade = close_position(position, tick_time, ltp, point_exit_reason)
-                trades.append(trade)
-                if mode == "replay":
-                    print_trade("EXIT", trade)
+            daily_status = daily_pnl_status(
+                realized_pnl_by_day.get(day_key, 0.0), position, ltp, daily_pnl_config
+            )
+            if daily_status["hit"] and bool(daily_pnl_config.get("close_position_when_hit", True)):
+                close_and_record(position, tick_time, ltp, daily_status["reason"])
                 position = None
+            elif not trade_window_open:
+                close_and_record(position, tick_time, ltp, "BACKTEST_TIME_STOP")
+                position = None
+            else:
+                point_exit_reason = should_exit(position, ltp, exit_config)
+                if point_exit_reason:
+                    close_and_record(position, tick_time, ltp, point_exit_reason)
+                    position = None
 
         completed_long = long_store.update(ltp, tick_time=tick_time)
         completed_short = short_store.update(ltp, tick_time=tick_time)
@@ -390,10 +452,7 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
                 print(f"[{tick_time}] LONG TF CLOSE {current} MAC={channel}")
             if tick_time >= start_dt and channel and position is not None and position["side"] == "LONG":
                 if current < channel["low"]:
-                    trade = close_position(position, tick_time, current, "MAC_BREAK_LOWER")
-                    trades.append(trade)
-                    if mode == "replay":
-                        print_trade("EXIT", trade)
+                    close_and_record(position, tick_time, current, "MAC_BREAK_LOWER")
                     position = None
                 else:
                     stop_loss = update_candle_stop(position, long_rows, current_index, candle_stop_points)
@@ -401,12 +460,11 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
                         print(f"[{tick_time}] LONG STOP {stop_loss}")
                     exit_reason = candle_stop_exit(position, current)
                     if exit_reason:
-                        trade = close_position(position, tick_time, current, exit_reason)
-                        trades.append(trade)
-                        if mode == "replay":
-                            print_trade("EXIT", trade)
+                        close_and_record(position, tick_time, current, exit_reason)
                         position = None
-            if tick_time >= start_dt and channel and position is None:
+            if tick_time >= start_dt and trade_window_open and not (
+                bool(daily_pnl_config.get("block_new_entries_after_hit", True)) and day_key in blocked_days
+            ) and channel and position is None:
                 signal = (
                     crossed_above(previous, current, channel["high"])
                     or jumped_above(previous, current_open, channel["high"])
@@ -443,10 +501,7 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
                 print(f"[{tick_time}] SHORT TF CLOSE {current} MAC={channel}")
             if tick_time >= start_dt and channel and position is not None and position["side"] == "SHORT":
                 if current > channel["high"]:
-                    trade = close_position(position, tick_time, current, "MAC_BREAK_UPPER")
-                    trades.append(trade)
-                    if mode == "replay":
-                        print_trade("EXIT", trade)
+                    close_and_record(position, tick_time, current, "MAC_BREAK_UPPER")
                     position = None
                 else:
                     stop_loss = update_candle_stop(position, short_rows, current_index, candle_stop_points)
@@ -454,12 +509,11 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
                         print(f"[{tick_time}] SHORT STOP {stop_loss}")
                     exit_reason = candle_stop_exit(position, current)
                     if exit_reason:
-                        trade = close_position(position, tick_time, current, exit_reason)
-                        trades.append(trade)
-                        if mode == "replay":
-                            print_trade("EXIT", trade)
+                        close_and_record(position, tick_time, current, exit_reason)
                         position = None
-            if tick_time >= start_dt and channel and position is None:
+            if tick_time >= start_dt and trade_window_open and not (
+                bool(daily_pnl_config.get("block_new_entries_after_hit", True)) and day_key in blocked_days
+            ) and channel and position is None:
                 signal = (
                     crossed_below(previous, current, channel["low"])
                     or jumped_below(previous, current_open, channel["low"])
@@ -490,10 +544,7 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
 
     if position is not None:
         final_price = float(one_min_candles[-1]["close"])
-        trade = close_position(position, end_dt, final_price, "END_OF_BACKTEST")
-        trades.append(trade)
-        if mode == "replay":
-            print_trade("EXIT", trade)
+        close_and_record(position, end_dt, final_price, "END_OF_BACKTEST")
 
     return {
         "instrument": instrument,
@@ -503,6 +554,11 @@ def run_backtest(config, one_min_candles, start_dt, end_dt, long_timeframe, shor
         "short_timeframe": short_timeframe,
         "mac_length": indicators.MA_PERIOD,
         "candle_stop_points": candle_stop_points,
+        "trade_start_time": trade_start_time,
+        "trade_stop_time": trade_stop_time,
+        "daily_pnl": daily_pnl_config,
+        "backtest": backtest_config,
+        "daily_stats": build_daily_stats(trades),
         "trades": trades,
     }
 
@@ -512,6 +568,43 @@ def print_trade(label, trade):
         f"{label} {trade.side} entry={trade.entry_price} exit={trade.exit_price} "
         f"points={trade.points:.2f} pnl={trade.pnl:.2f} reason={trade.reason}"
     )
+
+
+def save_pnl_graph(result):
+    """Save a cumulative realised-P&L graph when enabled in strategy_config.json."""
+    graph_config = result.get("backtest", {})
+    if not bool(graph_config.get("save_pnl_graph", False)):
+        return
+
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("P&L graph was requested but matplotlib is not installed.")
+        return
+
+    trades = result["trades"]
+    cumulative = 0.0
+    x_values = []
+    y_values = []
+    for trade in trades:
+        cumulative += trade.pnl
+        x_values.append(trade.exit_time)
+        y_values.append(cumulative)
+
+    output_path = Path(graph_config.get("pnl_graph_path", "backtest_pnl.png"))
+    if not output_path.is_absolute():
+        output_path = STRATEGY_DIR / output_path
+    plt.figure(figsize=(11, 5))
+    plt.plot(x_values, y_values, marker="o", label="Cumulative realised P&L")
+    plt.axhline(0, color="black", linewidth=0.8)
+    plt.title("Crude Oil Backtest Cumulative P&L")
+    plt.xlabel("Trade exit time")
+    plt.ylabel("P&L")
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close()
+    print(f"P&L graph saved to: {output_path}")
 
 
 def print_summary(result):
@@ -528,12 +621,21 @@ def print_summary(result):
     print(f"Short timeframe: {result['short_timeframe']} min")
     print(f"MAC length: {result['mac_length']}")
     print(f"Candle stop points: {result['candle_stop_points']}")
+    if result["trade_start_time"] is not None and result["trade_stop_time"] is not None:
+        print(f"Trade window: {result['trade_start_time'].strftime('%H:%M')} -> {result['trade_stop_time'].strftime('%H:%M')}")
     print(f"Trades: {len(trades)}")
     print(f"Winners: {len(winners)}")
     print(f"Losers: {len(losers)}")
     print(f"Total PnL: {total_pnl:.2f}")
     if margins:
         print(f"Max Dhan margin required: {max(margins):.2f}")
+    if result["daily_stats"]:
+        print("\nDaily results:")
+        for day, stats in sorted(result["daily_stats"].items()):
+            print(
+                f"{day} pnl={stats['pnl']:.2f} trades={stats['trades']} "
+                f"winners={stats['winners']} losers={stats['losers']} breakeven={stats['breakeven']}"
+            )
     if trades:
         print("\nTrades:")
         for idx, trade in enumerate(trades, 1):
@@ -544,12 +646,31 @@ def print_summary(result):
                 f"margin_qty={trade.margin_quantity} margin_required={trade.margin_required} "
                 f"reason={trade.reason}"
             )
+    save_pnl_graph(result)
 
 
 def main():
     config = load_config()
-    start_dt = parse_datetime("Start date/time: ")
-    end_dt = parse_datetime("End date/time: ")
+    start_dt, start_is_date_only = parse_datetime("Start date/time: ")
+    end_dt, end_is_date_only = parse_datetime("End date/time: ")
+
+    # A same-day date-only request uses the configured backtest session instead
+    # of accidentally producing an empty midnight-to-midnight range.
+    if start_is_date_only and end_is_date_only and start_dt.date() == end_dt.date():
+        backtest_config = config.get("backtest", {})
+        start_time = parse_trade_time(backtest_config.get("trade_start_time"), "trade_start_time")
+        stop_time = parse_trade_time(backtest_config.get("trade_stop_time"), "trade_stop_time")
+        if start_time is None or stop_time is None:
+            raise ValueError(
+                "For a same-day date-only backtest, set backtest.trade_start_time "
+                "and backtest.trade_stop_time in strategy_config.json."
+            )
+        start_dt = datetime.combine(start_dt.date(), start_time)
+        end_dt = datetime.combine(end_dt.date(), stop_time)
+        if end_dt <= start_dt:
+            end_dt += timedelta(days=1)
+        print(f"Using configured same-day backtest period: {start_dt} -> {end_dt}")
+
     if end_dt <= start_dt:
         raise ValueError("End date/time must be after start date/time")
 

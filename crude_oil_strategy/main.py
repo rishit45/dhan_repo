@@ -5,7 +5,7 @@ from buy import place_buy_order
 from candles import CandleStore
 from config_loader import get_instrument, get_quantity, live_orders_enabled, load_config
 from debug import print_data
-from exit_manager import should_exit
+from exit_manager import daily_pnl_status, position_pnl, should_exit
 import indicators
 from live_trading import (
     check_margin_before_order,
@@ -222,6 +222,7 @@ def run():
     mac_config = config.get("moving_average_channel", {})
     entry_config = config.get("entry", {})
     exit_config = config.get("exit", {})
+    daily_pnl_config = config.get("daily_pnl", {})
     edis_config = config.get("edis", {})
     enabled_sides = set(entry_config.get("enabled_sides", ["LONG", "SHORT"]))
     mac_length = int(mac_config.get("length", 20))
@@ -282,6 +283,9 @@ def run():
     position = None
     trade_executed_since_last_long = False
     last_trade_summary = None
+    realized_pnl_today = 0.0
+    pnl_day = None
+    daily_limit_reached = False
 
     start_time = datetime.now()
     print(f"Crude oil strategy started at {start_time.isoformat()}")
@@ -298,6 +302,29 @@ def run():
             quote = fetch_quote(dhan, instrument)
             ltp = quote["ltp"]
 
+            current_day = datetime.now().date()
+            if current_day != pnl_day:
+                pnl_day = current_day
+                realized_pnl_today = 0.0
+                daily_limit_reached = False
+
+            daily_status = daily_pnl_status(realized_pnl_today, position, ltp, daily_pnl_config)
+            if daily_status["hit"]:
+                daily_limit_reached = bool(daily_pnl_config.get("block_new_entries_after_hit", True))
+                if position is not None and bool(daily_pnl_config.get("close_position_when_hit", True)):
+                    daily_reason = daily_status["reason"]
+                    print(f"[DAILY PNL EXIT] {daily_reason} total_pnl={daily_status['total_pnl']:.2f}")
+                    response = place_exit(dhan, instrument, position, quote, live_orders, edis_config)
+                    if order_accepted(response, live_orders):
+                        realized_pnl_today += position_pnl(position, ltp)
+                        last_trade_summary = (
+                            f"EXIT {position['side']} qty={position['quantity']} price={ltp} reason={daily_reason}"
+                        )
+                        trade_executed_since_last_long = True
+                        position = None
+                    else:
+                        print(f"[DAILY EXIT ORDER NOT ACCEPTED] Keeping position open. response={response}")
+
             point_exit_reason = should_exit(position, ltp, exit_config)
             if point_exit_reason:
                 print(f"[POINT EXIT] {point_exit_reason} position={position} ltp={ltp}")
@@ -307,6 +334,11 @@ def run():
                         last_trade_summary = (
                             f"EXIT {position['side']} qty={position['quantity']} "
                             f"price={ltp} reason={point_exit_reason}"
+                        )
+                        realized_pnl_today += position_pnl(position, ltp)
+                        daily_limit_reached = (
+                            bool(daily_pnl_config.get("block_new_entries_after_hit", True))
+                            and daily_pnl_status(realized_pnl_today, None, None, daily_pnl_config)["hit"]
                         )
                         trade_executed_since_last_long = True
                     except Exception:
@@ -361,6 +393,11 @@ def run():
                             response = place_exit(dhan, instrument, position, quote, live_orders, edis_config)
                             if order_accepted(response, live_orders):
                                 last_trade_summary = f"EXIT {position['side']} qty={position['quantity']} price={ltp} reason={exit_reason}"
+                                realized_pnl_today += position_pnl(position, ltp)
+                                daily_limit_reached = (
+                                    bool(daily_pnl_config.get("block_new_entries_after_hit", True))
+                                    and daily_pnl_status(realized_pnl_today, None, None, daily_pnl_config)["hit"]
+                                )
                                 trade_executed_since_last_long = True
                                 position = None
                             else:
@@ -400,7 +437,7 @@ def run():
                         },
                     )
 
-                    if position is None:
+                    if position is None and not daily_limit_reached:
                         if long_raw_signal and long_side_enabled:
                             signal = "LONG"
                         else:
@@ -483,6 +520,11 @@ def run():
                             response = place_exit(dhan, instrument, position, quote, live_orders, edis_config)
                             if order_accepted(response, live_orders):
                                 last_trade_summary = f"EXIT {position['side']} qty={position['quantity']} price={ltp} reason={exit_reason}"
+                                realized_pnl_today += position_pnl(position, ltp)
+                                daily_limit_reached = (
+                                    bool(daily_pnl_config.get("block_new_entries_after_hit", True))
+                                    and daily_pnl_status(realized_pnl_today, None, None, daily_pnl_config)["hit"]
+                                )
                                 trade_executed_since_last_long = True
                                 position = None
                             else:
@@ -522,7 +564,7 @@ def run():
                         },
                     )
 
-                    if position is None:
+                    if position is None and not daily_limit_reached:
                         if short_raw_signal and short_side_enabled:
                             signal = "SHORT"
                         else:

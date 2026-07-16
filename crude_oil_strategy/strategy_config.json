@@ -44,12 +44,28 @@
     "length": 55
   },
   "exit": {
-    "mode": "candle_mac",
+    "mode": "flexible",
     "candle_stop_points": 3,
+    "target_type": "pnl",
+    "stop_loss_type": "pnl",
     "target_points": 0,
     "stop_loss_points": 0,
     "target_pnl": 0,
     "stop_loss_pnl": 0
+  },
+  "daily_pnl": {
+    "enabled": false,
+    "target_pnl": 0,
+    "stop_loss_pnl": 0,
+    "include_unrealized": true,
+    "close_position_when_hit": true,
+    "block_new_entries_after_hit": true
+  },
+  "backtest": {
+    "trade_start_time": "09:00",
+    "trade_stop_time": "23:30",
+    "save_pnl_graph": false,
+    "pnl_graph_path": "backtest_pnl.png"
   },
   "edis": {
     "enabled": false

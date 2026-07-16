@@ -232,14 +232,14 @@ class HistoricalCandleAggregator:
 
 
 def fetch_1min_history(dhan, instrument, start_dt, end_dt, warmup_days=10):
-    # Dhan accepts intraday timestamps.  Supplying date-only values can omit
-    # evening MCX candles, so retain the requested end time (for example,
-    # 23:30) instead of letting the API choose a day cutoff.
+    # Dhan's intraday API accepts YYYY-MM-DD dates, not timestamps.  We apply
+    # the requested time range locally after Dhan returns the complete dates,
+    # which also retains MCX evening-session candles.
     from_dt = (start_dt - timedelta(days=warmup_days)).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
-    from_date = from_dt.strftime("%Y-%m-%d %H:%M:%S")
-    to_date = end_dt.replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+    from_date = from_dt.date().isoformat()
+    to_date = end_dt.date().isoformat()
     security_id = _security_id_for_quote(instrument["security_id"])
     exchange_segment = instrument["exchange_segment"]
     last_error = None
